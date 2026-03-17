@@ -20,6 +20,6 @@ jobs:
         with:
           args: |
             --test \
-            --all \
+            --amd64 --aarch64 \
             --target cgate-server \
             --image "ghcr.io/rbhr/{arch}-cgate-server"
