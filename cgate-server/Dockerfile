@@ -59,7 +59,8 @@ COPY tag/ /cgate/tag-defaults/
 
 # Copy startup script
 COPY run.sh /cgate/run.sh
-RUN chmod +x /cgate/run.sh /cgate/cgate-web
+RUN chmod +x /cgate/run.sh /cgate/cgate-web /cgate/cgate.sh && \
+    chmod +x /cgate/yajsw/bin/*.sh
 
 WORKDIR /cgate
 ENTRYPOINT ["/cgate/run.sh"]
