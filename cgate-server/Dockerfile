@@ -1,3 +1,5 @@
+ARG BUILD_FROM=eclipse-temurin:11-jre
+
 ## Stage 1: Build Go web bridge
 FROM golang:1.25-alpine AS web-build
 WORKDIR /build
@@ -7,7 +9,6 @@ RUN go mod init cgate-web && \
     CGO_ENABLED=0 go build -o cgate-web .
 
 ## Stage 2: C-Gate Server runtime
-ARG BUILD_FROM=eclipse-temurin:11-jre
 FROM ${BUILD_FROM}
 
 # Install jq for parsing Home Assistant options.json
