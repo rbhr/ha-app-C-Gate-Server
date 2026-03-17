@@ -58,17 +58,6 @@ fi
     done
 ) &
 
-# --- Build C-Gate command line ---
-
-CMD_ARGS="-s"
-if [ -n "$INTERFACE_IP" ]; then
-    CMD_ARGS="$CMD_ARGS -connect $INTERFACE_IP"
-fi
-CMD_ARGS="$CMD_ARGS -project $PROJECT_NAME"
-if [ -n "$CGATE_ARGS" ]; then
-    CMD_ARGS="$CMD_ARGS $CGATE_ARGS"
-fi
-
 # --- Launch C-Gate as PID 1 ---
 
 exec java \
@@ -77,4 +66,4 @@ exec java \
     -Xms64M \
     -Xmx256M \
     -jar cgate.jar \
-    $CMD_ARGS
+    -s
