@@ -4,10 +4,10 @@ set -e
 OPTIONS_FILE="/data/options.json"
 
 # Parse Home Assistant add-on options
-PROJECT_NAME=$(jq -r '.project_name // "HOME"' "$OPTIONS_FILE")
-INTERFACE_IP=$(jq -r '.interface_ip // ""' "$OPTIONS_FILE")
-LOG_LEVEL=$(jq -r '.log_level // "DEBUG"' "$OPTIONS_FILE")
-CGATE_ARGS=$(jq -r '.cgate_args // ""' "$OPTIONS_FILE")
+PROJECT_NAME=$(/usr/bin/jq -r '.project_name // "HOME"' "$OPTIONS_FILE")
+INTERFACE_IP=$(/usr/bin/jq -r '.interface_ip // ""' "$OPTIONS_FILE")
+LOG_LEVEL=$(/usr/bin/jq -r '.log_level // "DEBUG"' "$OPTIONS_FILE")
+CGATE_ARGS=$(/usr/bin/jq -r '.cgate_args // ""' "$OPTIONS_FILE")
 
 echo "C-Gate Server starting..."
 echo "  Project:   ${PROJECT_NAME}"
