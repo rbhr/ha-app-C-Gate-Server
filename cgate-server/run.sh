@@ -3,11 +3,16 @@ set -e
 
 OPTIONS_FILE="/data/options.json"
 
-# Parse Home Assistant add-on options
-PROJECT_NAME=$(/usr/bin/jq -r '.project_name // "HOME"' "$OPTIONS_FILE")
-INTERFACE_IP=$(/usr/bin/jq -r '.interface_ip // ""' "$OPTIONS_FILE")
-LOG_LEVEL=$(/usr/bin/jq -r '.log_level // "DEBUG"' "$OPTIONS_FILE")
-CGATE_ARGS=$(/usr/bin/jq -r '.cgate_args // ""' "$OPTIONS_FILE")
+# Parse Home Assistant add-on options (no jq — restricted in HA containers)
+json_value() {
+    sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$OPTIONS_FILE"
+}
+PROJECT_NAME=$(json_value project_name)
+PROJECT_NAME="${PROJECT_NAME:-HOME}"
+INTERFACE_IP=$(json_value interface_ip)
+LOG_LEVEL=$(json_value log_level)
+LOG_LEVEL="${LOG_LEVEL:-DEBUG}"
+CGATE_ARGS=$(json_value cgate_args)
 
 echo "C-Gate Server starting..."
 echo "  Project:   ${PROJECT_NAME}"

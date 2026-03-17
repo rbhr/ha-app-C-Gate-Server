@@ -11,12 +11,6 @@ RUN go mod init cgate-web && \
 ## Stage 2: C-Gate Server runtime
 FROM ${BUILD_FROM}
 
-# Install jq for parsing Home Assistant options.json
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends jq && \
-    rm -rf /var/lib/apt/lists/* && \
-    chmod +x /usr/bin/jq
-
 # HA add-on labels
 ARG BUILD_ARCH
 ARG BUILD_DATE
