@@ -28,5 +28,4 @@ jobs:
         with:
           args: |
             --amd64 --aarch64 \
-            --target cgate-server \
-            --image "ghcr.io/${{ github.repository_owner }}/{arch}-cgate-server"
+            --target cgate-server
