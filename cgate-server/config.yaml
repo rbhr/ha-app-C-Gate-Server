@@ -9,6 +9,7 @@ arch:
 startup: application
 boot: auto
 init: false
+apparmor: false
 timeout: 60
 ingress: true
 ingress_port: 8980

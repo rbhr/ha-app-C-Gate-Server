@@ -3,33 +3,11 @@ set -e
 
 OPTIONS_FILE="/data/options.json"
 
-# Parse Home Assistant add-on options using pure shell builtins
-# (HA container security blocks external binaries like jq, sed, grep)
-json_value() {
-    key="$1"
-    while IFS= read -r line; do
-        case "$line" in
-            *"\"${key}\""*)
-                # strip everything up to and including the colon
-                val="${line#*:}"
-                # strip leading whitespace and quotes
-                val="${val#"${val%%[! ]*}"}"
-                val="${val#\"}"
-                # strip trailing quote, comma, whitespace
-                val="${val%\"*}"
-                echo "$val"
-                return
-                ;;
-        esac
-    done < "$OPTIONS_FILE"
-}
-
-PROJECT_NAME=$(json_value project_name)
-PROJECT_NAME="${PROJECT_NAME:-HOME}"
-INTERFACE_IP=$(json_value interface_ip)
-LOG_LEVEL=$(json_value log_level)
-LOG_LEVEL="${LOG_LEVEL:-DEBUG}"
-CGATE_ARGS=$(json_value cgate_args)
+# Parse Home Assistant add-on options
+PROJECT_NAME=$(jq -r '.project_name // "HOME"' "$OPTIONS_FILE")
+INTERFACE_IP=$(jq -r '.interface_ip // ""' "$OPTIONS_FILE")
+LOG_LEVEL=$(jq -r '.log_level // "DEBUG"' "$OPTIONS_FILE")
+CGATE_ARGS=$(jq -r '.cgate_args // ""' "$OPTIONS_FILE")
 
 echo "C-Gate Server starting..."
 echo "  Project:   ${PROJECT_NAME}"
@@ -62,38 +40,12 @@ mkdir -p "/data/tag/${PROJECT_NAME}"
 
 # --- Apply configuration ---
 
-# Update log level in logback.xml (pure shell, no sed)
-if [ -f /data/config/logback.xml ]; then
-    tmpfile="/data/config/logback.xml.tmp"
-    while IFS= read -r line; do
-        case "$line" in
-            *'level="'*'"'*)
-                # Replace level="WHATEVER" with configured level
-                prefix="${line%%level=\"*}"
-                suffix="${line#*level=\"}"
-                suffix="${suffix#*\"}"
-                echo "${prefix}level=\"${LOG_LEVEL}\"${suffix}"
-                ;;
-            *)
-                echo "$line"
-                ;;
-        esac
-    done < /data/config/logback.xml > "$tmpfile"
-    mv "$tmpfile" /data/config/logback.xml
-fi
+# Update log level in logback.xml
+sed -i "s/level=\"[A-Z]*\"/level=\"${LOG_LEVEL}\"/" /data/config/logback.xml
 
 # Ensure Home Assistant ingress proxy IP is allowed
-access_file="/data/config/access.txt"
-found=0
-if [ -f "$access_file" ]; then
-    while IFS= read -r line; do
-        case "$line" in
-            *172.30.32.2*) found=1; break ;;
-        esac
-    done < "$access_file"
-fi
-if [ "$found" = "0" ]; then
-    echo "interface 172.30.32.2 Program" >> "$access_file"
+if ! grep -q "172.30.32.2" /data/config/access.txt; then
+    echo "interface 172.30.32.2 Program" >> /data/config/access.txt
 fi
 
 # --- Start Go web bridge with auto-restart ---
