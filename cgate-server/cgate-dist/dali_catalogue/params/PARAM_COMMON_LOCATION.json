@@ -1,0 +1,7 @@
+{
+    "name": "PARAM_COMMON_LOCATION",
+    "author": "S.E.",
+    "desc": "Installed Location for ECG",
+    "version": -1,
+    "default": null
+}

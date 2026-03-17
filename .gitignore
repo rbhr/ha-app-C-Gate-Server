@@ -1,0 +1,14 @@
+# C-Gate runtime artifacts
+cgate-server/cgate-dist/com/
+cgate-server/cgate-dist/logs/
+C-Gate-Native-Logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

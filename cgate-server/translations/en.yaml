@@ -1,0 +1,19 @@
+configuration:
+  project_name:
+    name: Project Name
+    description: >-
+      The default C-Gate project name. Must match a tag database folder name
+      (e.g. HOME, OFFICE).
+  interface_ip:
+    name: Interface IP
+    description: >-
+      IP address of a remote C-Bus interface (CNI, wireless gateway, etc.).
+      Leave empty for local or serial connections.
+  log_level:
+    name: Log Level
+    description: C-Gate logging verbosity level.
+  cgate_args:
+    name: Additional Arguments
+    description: >-
+      Extra command-line arguments passed to the C-Gate Java process
+      (advanced use only).

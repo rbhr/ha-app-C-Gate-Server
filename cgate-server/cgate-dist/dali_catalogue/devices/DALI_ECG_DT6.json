@@ -1,0 +1,14 @@
+{
+    "name": "DALI_ECG_DT6",
+    "author": "S.E.",
+    "desc": "Single Channel LED Device",
+    "version": -1,
+    "channels": [
+        "ECG_DT6"
+    ],
+    "params": [
+        "PARAM_COMMON_NAME",
+        "PARAM_COMMON_DESCRIPTION",
+        "PARAM_COMMON_LOCATION"
+    ]
+}

@@ -1,0 +1,16 @@
+{
+    "name": "DALI_ECG_GENERIC_x3",
+    "author": "S.E.",
+    "desc": "DALI 3 Channel Device (Generic)",
+    "version": -1,
+    "channels": [
+        "ECG_GENERIC",
+        "ECG_GENERIC",
+        "ECG_GENERIC"
+    ],
+    "params": [
+        "PARAM_COMMON_NAME",
+        "PARAM_COMMON_DESCRIPTION",
+        "PARAM_COMMON_LOCATION"
+    ]
+}

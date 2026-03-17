@@ -1,0 +1,7 @@
+##C-Gate Server Access Control File
+## Modified for containerised deployment - allows programming from any IP
+interface 0:0:0:0:0:0:0:1 Program
+interface 127.0.0.1 Program
+interface localhost Program
+interface 0.0.0.0 Program
+## End of access control file

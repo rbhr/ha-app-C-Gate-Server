@@ -1,0 +1,15 @@
+#include <tunables/global>
+
+profile cgate-server flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  capability net_bind_service,
+
+  network tcp,
+  network udp,
+
+  /data/** rw,
+  /cgate/** rmix,
+  /proc/** r,
+  /tmp/** rw,
+}

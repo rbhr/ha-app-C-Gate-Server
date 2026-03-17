@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C-Gate Console</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1e1e1e; color: #d4d4d4; font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; display: flex; flex-direction: column; height: 100vh; }
+  #header { background: #2d2d2d; padding: 8px 16px; border-bottom: 1px solid #444; display: flex; align-items: center; gap: 12px; }
+  #header h1 { font-size: 14px; color: #569cd6; font-weight: normal; }
+  #status { font-size: 11px; padding: 2px 8px; border-radius: 3px; }
+  .connected { background: #2d4a2d; color: #6a9955; }
+  .disconnected { background: #4a2d2d; color: #d16969; }
+  #log { flex: 1; overflow-y: auto; padding: 8px; }
+  .entry { padding: 1px 0; white-space: pre-wrap; word-break: break-all; }
+  .time { color: #666; }
+  .tag { display: inline-block; min-width: 70px; font-weight: bold; }
+  .tag-event { color: #dcdcaa; }
+  .tag-status { color: #4ec9b0; }
+  .tag-command { color: #569cd6; }
+  .tag-response { color: #9cdcfe; }
+  #input-bar { background: #2d2d2d; padding: 8px; border-top: 1px solid #444; display: flex; gap: 8px; }
+  #cmd { flex: 1; background: #1e1e1e; color: #d4d4d4; border: 1px solid #444; padding: 6px 10px; font-family: inherit; font-size: 13px; outline: none; }
+  #cmd:focus { border-color: #569cd6; }
+  #send { background: #0e639c; color: #fff; border: none; padding: 6px 16px; cursor: pointer; font-family: inherit; }
+  #send:hover { background: #1177bb; }
+  #filters { display: flex; gap: 8px; margin-left: auto; }
+  #filters label { font-size: 11px; cursor: pointer; user-select: none; }
+  #filters input { margin-right: 3px; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>C-Gate Console</h1>
+  <span id="status" class="disconnected">disconnected</span>
+  <div id="filters">
+    <label><input type="checkbox" data-stream="event" checked> events</label>
+    <label><input type="checkbox" data-stream="status" checked> status</label>
+    <label><input type="checkbox" data-stream="command" checked> commands</label>
+    <label><input type="checkbox" data-stream="response" checked> responses</label>
+  </div>
+</div>
+
+<div id="log"></div>
+
+<div id="input-bar">
+  <input id="cmd" type="text" placeholder="Enter C-Gate command (e.g. tree //HOME)" autofocus>
+  <button id="send">Send</button>
+</div>
+
+<script>
+(function() {
+  var log = document.getElementById('log');
+  var cmd = document.getElementById('cmd');
+  var statusEl = document.getElementById('status');
+  var filters = {};
+  var history = [];
+  var histIdx = -1;
+
+  document.querySelectorAll('#filters input').forEach(function(cb) {
+    filters[cb.dataset.stream] = cb.checked;
+    cb.addEventListener('change', function() { filters[this.dataset.stream] = this.checked; });
+  });
+
+  function addEntry(stream, time, data) {
+    if (filters[stream] === false) return;
+    var div = document.createElement('div');
+    div.className = 'entry';
+    div.innerHTML = '<span class="time">' + esc(time) + '</span> <span class="tag tag-' + stream + '">[' + stream + ']</span> ' + esc(data);
+    log.appendChild(div);
+    // Keep max 2000 lines
+    while (log.children.length > 2000) log.removeChild(log.firstChild);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function esc(s) { var d = document.createElement('span'); d.textContent = s; return d.innerHTML; }
+
+  // WebSocket
+  var ws;
+  function connect() {
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(proto + '//' + location.host + '/ws');
+    ws.onopen = function() {
+      statusEl.textContent = 'connected';
+      statusEl.className = 'connected';
+    };
+    ws.onclose = function() {
+      statusEl.textContent = 'disconnected';
+      statusEl.className = 'disconnected';
+      setTimeout(connect, 3000);
+    };
+    ws.onmessage = function(e) {
+      try {
+        var msg = JSON.parse(e.data);
+        addEntry(msg.stream, msg.time, msg.data);
+      } catch(err) {}
+    };
+  }
+  connect();
+
+  // Send command
+  function send() {
+    var val = cmd.value.trim();
+    if (!val) return;
+    history.unshift(val);
+    histIdx = -1;
+    if (history.length > 100) history.pop();
+    fetch('/cgate?cmd=' + encodeURIComponent(val))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        // Response is broadcast via WebSocket, but show error if fetch failed
+        if (data.error) addEntry('response', new Date().toTimeString().slice(0,8), 'ERROR: ' + data.error);
+      })
+      .catch(function(err) {
+        addEntry('response', new Date().toTimeString().slice(0,8), 'FETCH ERROR: ' + err);
+      });
+    cmd.value = '';
+  }
+
+  document.getElementById('send').addEventListener('click', send);
+  cmd.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { send(); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); if (histIdx < history.length - 1) { histIdx++; cmd.value = history[histIdx]; } }
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (histIdx > 0) { histIdx--; cmd.value = history[histIdx]; } else { histIdx = -1; cmd.value = ''; } }
+  });
+})();
+</script>
+</body>
+</html>

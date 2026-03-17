@@ -1,0 +1,41 @@
+<configuration>
+	<!-- If CGATE_LOGS_HOME property is defined, adopt the base path. Otherwise, log files go in the application folder -->
+	<property name="LOGS_FOLDER" value="logs/" />
+	<if condition='isDefined("CGATE_LOGS_HOME")'>
+		<then>
+			<property name="LOGS_FOLDER" value="${CGATE_LOGS_HOME}" />
+		</then>
+	</if>
+
+	<statusListener class="ch.qos.logback.core.status.NopStatusListener" />
+
+	<!-- File appender: rolling daily / 500KB, 10-day retention -->
+	<appender name="ROLLING" class="ch.qos.logback.core.rolling.RollingFileAppender">
+		<file>${LOGS_FOLDER}event.txt</file>
+		<rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+			<fileNamePattern>${LOGS_FOLDER}event-%d{yyyyMMdd}-%i.txt</fileNamePattern>
+			<maxHistory>10</maxHistory>
+			<cleanHistoryOnStart>false</cleanHistoryOnStart>
+			<timeBasedFileNamingAndTriggeringPolicy class="com.clipsal.cgate.sys.SizeAndTimeBasedStartupRolloverFNATP">
+				<maxFileSize>500KB</maxFileSize>
+			</timeBasedFileNamingAndTriggeringPolicy>
+		</rollingPolicy>
+		<encoder>
+			<pattern>%msg%n</pattern>
+			<immediateFlush>true</immediateFlush>
+		</encoder>
+	</appender>
+
+	<!-- Console appender: writes to stdout for docker logs / Portainer -->
+	<appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+		<encoder>
+			<pattern>%msg%n</pattern>
+			<immediateFlush>true</immediateFlush>
+		</encoder>
+	</appender>
+
+	<root level="DEBUG">
+		<appender-ref ref="ROLLING" />
+		<appender-ref ref="STDOUT" />
+	</root>
+</configuration>

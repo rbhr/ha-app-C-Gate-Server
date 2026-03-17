@@ -1,0 +1,7 @@
+{
+    "name": "PARAM_COMMON_NAME",
+    "author": "S.E.",
+    "desc": "Name for ECG",
+    "version": -1,
+    "default": null
+}

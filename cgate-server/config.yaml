@@ -1,0 +1,52 @@
+name: C-Gate Server
+version: 1.0.0
+slug: cgate-server
+description: Schneider Electric SpaceLogic C-Gate Server for C-Bus home automation
+url: https://github.com/rbhr/ha-app-C-Gate-Server
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+init: false
+timeout: 60
+ingress: true
+ingress_port: 8980
+ingress_entry: /
+panel_icon: mdi:home-automation
+panel_title: C-Gate Console
+webui: http://[HOST]:[PORT:8980]
+ports:
+  20023/tcp: 20023
+  20024/tcp: 20024
+  20025/tcp: 20025
+  20026/tcp: 20026
+  20123/tcp: null
+  20124/tcp: null
+  20125/tcp: null
+  20126/tcp: null
+  8980/tcp: null
+ports_description:
+  20023/tcp: C-Gate Command Interface
+  20024/tcp: C-Gate Event Interface
+  20025/tcp: C-Gate Status Change Port
+  20026/tcp: C-Gate Config Change Port
+  20123/tcp: C-Gate SSL Command Interface
+  20124/tcp: C-Gate SSL Event Interface
+  20125/tcp: C-Gate SSL Status Change Port
+  20126/tcp: C-Gate SSL Config Change Port
+  8980/tcp: Web Console (direct access)
+map:
+  - type: data
+    read_only: false
+options:
+  project_name: HOME
+  interface_ip: ""
+  log_level: DEBUG
+  cgate_args: ""
+schema:
+  project_name: str
+  interface_ip: str?
+  log_level: list(TRACE|DEBUG|INFO|WARN|ERROR)
+  cgate_args: str?
+image: ghcr.io/rbhr/ha-app-cgate-server-{arch}

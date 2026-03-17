@@ -1,0 +1,14 @@
+{
+    "name": "ECG_DT8",
+    "author": "S.E.",
+    "desc": "Colour Controllable Type ECG",
+    "version": -1,
+    "types": [
+        "P209_DT8"
+    ],
+    "params": [
+        "PARAM_COMMON_NAME",
+        "PARAM_COMMON_DESCRIPTION",
+        "PARAM_COMMON_LOCATION"
+    ]
+}

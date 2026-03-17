@@ -1,0 +1,17 @@
+{
+    "name": "DALI_ECG_DT6_x4",
+    "author": "S.E.",
+    "desc": "DALI 4 Channel Device (DT6)",
+    "version": -1,
+    "channels": [
+        "ECG_DT6",
+        "ECG_DT6",
+        "ECG_DT6",
+        "ECG_DT6"
+    ],
+    "params": [
+        "PARAM_COMMON_NAME",
+        "PARAM_COMMON_DESCRIPTION",
+        "PARAM_COMMON_LOCATION"
+    ]
+}

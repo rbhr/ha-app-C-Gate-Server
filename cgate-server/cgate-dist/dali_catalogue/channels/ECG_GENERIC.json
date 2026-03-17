@@ -1,0 +1,13 @@
+{
+    "name": "ECG_GENERIC",
+    "author": "S.E.",
+    "desc": "Generic ECG",
+    "version": -1,
+    "types": [],
+    "params": [
+        "PARAM_COMMON_NAME",
+        "PARAM_COMMON_DESCRIPTION",
+        "PARAM_COMMON_LOCATION",
+        "PARAM_NAC_MODE"
+    ]
+}

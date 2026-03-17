@@ -1,0 +1,17 @@
+{
+    "name": "DALI_ECG_DT1-C",
+    "author": "S.E.",
+    "desc": "Emergency or Exit Light (Maintained)",
+    "version": -1,
+    "channels": [
+        "ECG_DT1-C"
+    ],
+    "params": [
+        "PARAM_COMMON_NAME",
+        "PARAM_COMMON_DESCRIPTION",
+        "PARAM_COMMON_LOCATION",
+        "PARAM_NAC_MODE",
+        "PARAM_NAC_GROUP_ADDRESS",
+        "PARAM_NAC_LIGHT_SOURCE_LIFE"
+    ]
+}

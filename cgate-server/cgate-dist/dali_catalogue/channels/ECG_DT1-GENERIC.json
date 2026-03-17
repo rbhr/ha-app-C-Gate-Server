@@ -1,0 +1,17 @@
+{
+    "name": "ECG_DT1-GENERIC",
+    "author": "S.E.",
+    "desc": "Emergency Type Generic - ECG",
+    "version": -1,
+    "types": [
+        "P202_DT1"
+    ],
+    "params": [
+        "PARAM_COMMON_NAME",
+        "PARAM_COMMON_DESCRIPTION",
+        "PARAM_COMMON_LOCATION",
+        "PARAM_NAC_MODE",
+        "PARAM_NAC_GROUP_ADDRESS",
+        "PARAM_NAC_LIGHT_SOURCE_LIFE"
+    ]
+}

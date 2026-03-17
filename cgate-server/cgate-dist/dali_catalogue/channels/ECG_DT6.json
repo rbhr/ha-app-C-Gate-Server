@@ -1,0 +1,14 @@
+{
+    "name": "ECG_DT6",
+    "author": "S.E.",
+    "desc": "LED Type ECG",
+    "version": -1,
+    "types": [
+        "P207_DT6"
+    ],
+    "params": [
+        "PARAM_COMMON_NAME",
+        "PARAM_COMMON_DESCRIPTION",
+        "PARAM_COMMON_LOCATION"
+    ]
+}

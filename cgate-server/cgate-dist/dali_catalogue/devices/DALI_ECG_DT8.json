@@ -1,0 +1,14 @@
+{
+    "name": "DALI_ECG_DT8",
+    "author": "S.E.",
+    "desc": "Single Channel Tunable White/Colour Controllable Device",
+    "version": -1,
+    "channels": [
+        "ECG_DT8"
+    ],
+    "params": [
+        "PARAM_COMMON_NAME",
+        "PARAM_COMMON_DESCRIPTION",
+        "PARAM_COMMON_LOCATION"
+    ]
+}
