@@ -1,4 +1,5 @@
-ARG BUILD_FROM=eclipse-temurin:11-jre
+ARG BUILD_FROM
+FROM ${BUILD_FROM} AS base
 
 ## Stage 1: Build Go web bridge
 FROM golang:1.25-alpine AS web-build
@@ -9,12 +10,10 @@ RUN go mod init cgate-web && \
     CGO_ENABLED=0 go build -o cgate-web .
 
 ## Stage 2: C-Gate Server runtime
-FROM ${BUILD_FROM}
+FROM base
 
-# Install jq for parsing Home Assistant options.json
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends jq && \
-    rm -rf /var/lib/apt/lists/*
+# Install Java runtime (HA base is Alpine)
+RUN apk add --no-cache openjdk11-jre-headless
 
 # HA add-on labels
 ARG BUILD_ARCH
