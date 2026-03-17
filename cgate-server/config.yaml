@@ -49,4 +49,4 @@ schema:
   interface_ip: str?
   log_level: list(TRACE|DEBUG|INFO|WARN|ERROR)
   cgate_args: str?
-image: ghcr.io/rbhr/ha-app-cgate-server-{arch}
+image: ghcr.io/rbhr/{arch}-cgate-server

@@ -1,8 +1,11 @@
 name: Test Build
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -19,4 +22,4 @@ jobs:
             --test \
             --all \
             --target cgate-server \
-            --docker-hub ghcr.io/rbhr
+            --image "ghcr.io/rbhr/{arch}-cgate-server"

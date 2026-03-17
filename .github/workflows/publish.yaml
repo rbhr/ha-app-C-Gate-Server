@@ -3,6 +3,7 @@ name: Publish
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -28,4 +29,4 @@ jobs:
           args: |
             --all \
             --target cgate-server \
-            --docker-hub ghcr.io/${{ github.repository_owner }}
+            --image "ghcr.io/${{ github.repository_owner }}/{arch}-cgate-server"
