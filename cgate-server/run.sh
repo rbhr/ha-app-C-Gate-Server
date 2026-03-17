@@ -3,10 +3,27 @@ set -e
 
 OPTIONS_FILE="/data/options.json"
 
-# Parse Home Assistant add-on options (no jq — restricted in HA containers)
+# Parse Home Assistant add-on options using pure shell builtins
+# (HA container security blocks external binaries like jq, sed, grep)
 json_value() {
-    sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$OPTIONS_FILE"
+    key="$1"
+    while IFS= read -r line; do
+        case "$line" in
+            *"\"${key}\""*)
+                # strip everything up to and including the colon
+                val="${line#*:}"
+                # strip leading whitespace and quotes
+                val="${val#"${val%%[! ]*}"}"
+                val="${val#\"}"
+                # strip trailing quote, comma, whitespace
+                val="${val%\"*}"
+                echo "$val"
+                return
+                ;;
+        esac
+    done < "$OPTIONS_FILE"
 }
+
 PROJECT_NAME=$(json_value project_name)
 PROJECT_NAME="${PROJECT_NAME:-HOME}"
 INTERFACE_IP=$(json_value interface_ip)
@@ -45,12 +62,38 @@ mkdir -p "/data/tag/${PROJECT_NAME}"
 
 # --- Apply configuration ---
 
-# Update log level in logback.xml
-sed -i "s/level=\"[A-Z]*\"/level=\"${LOG_LEVEL}\"/" /data/config/logback.xml
+# Update log level in logback.xml (pure shell, no sed)
+if [ -f /data/config/logback.xml ]; then
+    tmpfile="/data/config/logback.xml.tmp"
+    while IFS= read -r line; do
+        case "$line" in
+            *'level="'*'"'*)
+                # Replace level="WHATEVER" with configured level
+                prefix="${line%%level=\"*}"
+                suffix="${line#*level=\"}"
+                suffix="${suffix#*\"}"
+                echo "${prefix}level=\"${LOG_LEVEL}\"${suffix}"
+                ;;
+            *)
+                echo "$line"
+                ;;
+        esac
+    done < /data/config/logback.xml > "$tmpfile"
+    mv "$tmpfile" /data/config/logback.xml
+fi
 
 # Ensure Home Assistant ingress proxy IP is allowed
-if ! grep -q "172.30.32.2" /data/config/access.txt; then
-    echo "interface 172.30.32.2 Program" >> /data/config/access.txt
+access_file="/data/config/access.txt"
+found=0
+if [ -f "$access_file" ]; then
+    while IFS= read -r line; do
+        case "$line" in
+            *172.30.32.2*) found=1; break ;;
+        esac
+    done < "$access_file"
+fi
+if [ "$found" = "0" ]; then
+    echo "interface 172.30.32.2 Program" >> "$access_file"
 fi
 
 # --- Start Go web bridge with auto-restart ---
