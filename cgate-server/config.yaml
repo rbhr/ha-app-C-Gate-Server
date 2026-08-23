@@ -16,7 +16,6 @@ ingress_port: 8980
 ingress_entry: /
 panel_icon: mdi:home-automation
 panel_title: C-Gate Console
-webui: http://[HOST]:[PORT:8980]
 ports:
   20023/tcp: 20023
   20024/tcp: 20024
