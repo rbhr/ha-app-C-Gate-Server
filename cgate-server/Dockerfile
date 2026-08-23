@@ -1,5 +1,4 @@
-ARG BUILD_FROM
-FROM ${BUILD_FROM} AS base
+FROM ghcr.io/home-assistant/base:3.21 AS base
 
 ## Stage 1: Build Go web bridge
 FROM golang:1.25-alpine AS web-build
@@ -16,28 +15,26 @@ FROM base
 RUN apk add --no-cache openjdk11-jre-headless
 
 # HA add-on labels
-ARG BUILD_ARCH
-ARG BUILD_DATE
-ARG BUILD_DESCRIPTION
-ARG BUILD_NAME
-ARG BUILD_REF
-ARG BUILD_REPOSITORY
-ARG BUILD_VERSION
+# BUILD_ARCH and BUILD_VERSION are supplied by the builder build-image action,
+# which also overrides io.hass.arch/io.hass.version and the OCI created/source/
+# version labels at build time. The defaults below only apply to local builds.
+ARG BUILD_ARCH="amd64"
+ARG BUILD_VERSION="dev"
 LABEL \
-    io.hass.name="${BUILD_NAME}" \
-    io.hass.description="${BUILD_DESCRIPTION}" \
+    io.hass.name="C-Gate Server" \
+    io.hass.description="Schneider Electric SpaceLogic C-Gate Server for C-Bus home automation" \
     io.hass.arch="${BUILD_ARCH}" \
     io.hass.type="addon" \
     io.hass.version="${BUILD_VERSION}" \
+    io.hass.url="https://github.com/rbhr/ha-app-C-Gate-Server" \
     maintainer="rbhr" \
-    org.opencontainers.image.title="${BUILD_NAME}" \
-    org.opencontainers.image.description="${BUILD_DESCRIPTION}" \
+    org.opencontainers.image.title="C-Gate Server" \
+    org.opencontainers.image.description="Schneider Electric SpaceLogic C-Gate Server for C-Bus home automation" \
     org.opencontainers.image.vendor="rbhr" \
     org.opencontainers.image.authors="rbhr" \
+    org.opencontainers.image.licenses="MIT" \
     org.opencontainers.image.source="https://github.com/rbhr/ha-app-C-Gate-Server" \
-    org.opencontainers.image.created=${BUILD_DATE} \
-    org.opencontainers.image.revision=${BUILD_REF} \
-    org.opencontainers.image.version=${BUILD_VERSION}
+    org.opencontainers.image.version="${BUILD_VERSION}"
 
 # Create directories
 RUN mkdir -p /cgate/tag /cgate/config /cgate/logs /cgate/defaults /cgate/tag-defaults

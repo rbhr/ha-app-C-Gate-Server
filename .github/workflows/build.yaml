@@ -7,18 +7,96 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  ARCHITECTURES: '["amd64", "aarch64"]'
+  IMAGE_NAME: cgate-server
+
 jobs:
-  build:
-    name: Test build
+  init:
+    name: Prepare build matrix
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Build add-on
-        uses: home-assistant/builder@master
+      - name: Resolve add-on version
+        id: version
+        run: |
+          version="$(awk '/^version:/{print $2; exit}' cgate-server/config.yaml | tr -d "\"'")"
+          if [ -z "${version}" ]; then
+            echo "::error::Could not read version from cgate-server/config.yaml"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Add-on version: ${version}"
+
+      - name: Prepare matrix
+        id: matrix
+        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@2026.06.0
         with:
-          args: |
-            --test \
-            --amd64 --aarch64 \
-            --target cgate-server
+          architectures: ${{ env.ARCHITECTURES }}
+          image-name: ${{ env.IMAGE_NAME }}
+
+  build:
+    name: Test build ${{ matrix.arch }}
+    needs: init
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.init.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build ${{ matrix.arch }}
+        uses: home-assistant/builder/actions/build-image@2026.06.0
+        with:
+          arch: ${{ matrix.arch }}
+          context: ./cgate-server
+          image: ${{ matrix.image }}
+          image-tags: ${{ needs.init.outputs.version }}
+          version: ${{ needs.init.outputs.version }}
+          push: false
+          load: true
+          cosign: false
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify add-on labels
+        env:
+          IMAGE: ${{ matrix.image }}:${{ needs.init.outputs.version }}
+          EXPECTED_VERSION: ${{ needs.init.outputs.version }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          echo "Inspecting ${IMAGE}"
+          labels="$(docker inspect --format '{{json .Config.Labels}}' "${IMAGE}")"
+          echo "${labels}" | jq .
+
+          fail=0
+          check() {
+            actual="$(echo "${labels}" | jq -r --arg k "$1" '.[$k] // ""')"
+            if [ -z "${actual}" ]; then
+              echo "::error::Label $1 is empty"
+              fail=1
+            elif [ -n "$2" ] && [ "${actual}" != "$2" ]; then
+              echo "::error::Label $1 is '${actual}', expected '$2'"
+              fail=1
+            else
+              echo "ok: $1 = ${actual}"
+            fi
+          }
+
+          check io.hass.version "${EXPECTED_VERSION}"
+          check io.hass.arch "${EXPECTED_ARCH}"
+          check io.hass.type "addon"
+          check io.hass.name ""
+          check io.hass.description ""
+          check org.opencontainers.image.version "${EXPECTED_VERSION}"
+          check org.opencontainers.image.source ""
+          check org.opencontainers.image.created ""
+
+          exit "${fail}"
