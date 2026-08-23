@@ -77,11 +77,14 @@
 
   function esc(s) { var d = document.createElement('span'); d.textContent = s; return d.innerHTML; }
 
+  // Resolve paths relative to current page (works behind HA ingress proxy)
+  var basePath = location.pathname.replace(/\/$/, '');
+
   // WebSocket
   var ws;
   function connect() {
     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(proto + '//' + location.host + '/ws');
+    ws = new WebSocket(proto + '//' + location.host + basePath + '/ws');
     ws.onopen = function() {
       statusEl.textContent = 'connected';
       statusEl.className = 'connected';
@@ -107,7 +110,7 @@
     history.unshift(val);
     histIdx = -1;
     if (history.length > 100) history.pop();
-    fetch('/cgate?cmd=' + encodeURIComponent(val))
+    fetch(basePath + '/cgate?cmd=' + encodeURIComponent(val))
       .then(function(r) { return r.json(); })
       .then(function(data) {
         // Response is broadcast via WebSocket, but show error if fetch failed
