@@ -10028,7 +10028,6 @@
 					<MaxVersion>1.8.99</MaxVersion>
 					<UnitSpecName>KEYGL5.xml</UnitSpecName>
 					<ClassName>CBusEdlt</ClassName>
-					<IsDefault>true</IsDefault>
 				</Revision>
 				<Revision>
 					<UnitType>KEYGL5</UnitType>
@@ -10052,7 +10051,7 @@
 					<MaxVersion>4.99.99</MaxVersion>
 					<UnitSpecName>KEYGL5_2.xml</UnitSpecName>
 					<ClassName>CBus3NccEdltInputUnit</ClassName>
-					<IsInternal>true</IsInternal>
+					<IsDefault>true</IsDefault>
 				</Revision>
 				<Revision>
 					<UnitType>KEYGL5</UnitType>
@@ -10123,7 +10122,6 @@
 					<MaxVersion>1.8.99</MaxVersion>
 					<UnitSpecName>KEYGL5.xml</UnitSpecName>
 					<ClassName>CBusEdlt</ClassName>
-					<IsDefault>true</IsDefault>
 				</Revision>
 				<Revision>
 					<UnitType>KEYGL5</UnitType>
@@ -10148,7 +10146,7 @@
 					<MaxVersion>4.99.99</MaxVersion>
 					<UnitSpecName>KEYGL5_2.xml</UnitSpecName>
 					<ClassName>CBus3NccEdltInputUnit</ClassName>
-					<IsInternal>true</IsInternal>
+					<IsDefault>true</IsDefault>
 				</Revision>
 				
 				<Revision>
@@ -10220,7 +10218,6 @@
 					<MaxVersion>1.8.99</MaxVersion>
 					<UnitSpecName>KEYGL5.xml</UnitSpecName>
 					<ClassName>CBusEdlt</ClassName>
-					<IsDefault>true</IsDefault>
 				</Revision>
 				<Revision>
 					<UnitType>KEYGL5</UnitType>
@@ -10244,7 +10241,7 @@
 					<MaxVersion>4.99.99</MaxVersion>
 					<UnitSpecName>KEYGL5_2.xml</UnitSpecName>
 					<ClassName>CBus3NccEdltInputUnit</ClassName>
-					<IsInternal>true</IsInternal>
+					<IsDefault>true</IsDefault>
 				</Revision>
 				<Revision>
 					<UnitType>KEYGL5</UnitType>
@@ -10493,6 +10490,14 @@
 				<Revision>
 					<UnitType>BCN2B</UnitType>
 					<MinVersion>2.2.00</MinVersion>
+					<MaxVersion>2.2.99</MaxVersion>
+					<UnitSpecName>BCN2B.xml</UnitSpecName>
+					<ClassName>CBusNeoInputUnit</ClassName>
+					<IsInternal>true</IsInternal>
+				</Revision>
+				<Revision>
+					<UnitType>BCN2B</UnitType>
+					<MinVersion>2.3.00</MinVersion>
 					<MaxVersion>2.3.99</MaxVersion>
 					<UnitSpecName>BCN2B.xml</UnitSpecName>
 					<ClassName>CBusNeoInputUnit</ClassName>
@@ -10579,6 +10584,14 @@
 				<Revision>
 					<UnitType>BCN4B</UnitType>
 					<MinVersion>2.2.00</MinVersion>
+					<MaxVersion>2.2.99</MaxVersion>
+					<UnitSpecName>BCN4B.xml</UnitSpecName>
+					<ClassName>CBusNeoInputUnit</ClassName>
+					<IsInternal>true</IsInternal>
+				</Revision>
+				<Revision>
+					<UnitType>BCN4B</UnitType>
+					<MinVersion>2.3.00</MinVersion>
 					<MaxVersion>2.3.99</MaxVersion>
 					<UnitSpecName>BCN4B.xml</UnitSpecName>
 					<ClassName>CBusNeoInputUnit</ClassName>
@@ -10625,11 +10638,19 @@
 					<MaxVersion>2.2.99</MaxVersion>
 					<UnitSpecName>BCN4B.xml</UnitSpecName>
 					<ClassName>CBusNeoInputUnit</ClassName>
-					<IsDefault>true</IsDefault>
+					<IsInternal>true</IsInternal>
 				</Revision>
 				<Revision>
 					<UnitType>BCI4A</UnitType>
 					<MinVersion>2.3.00</MinVersion>
+					<MaxVersion>2.3.99</MaxVersion>
+					<UnitSpecName>BCN4B.xml</UnitSpecName>
+					<ClassName>CBusNeoInputUnit</ClassName>
+					<IsDefault>true</IsDefault>
+				</Revision>
+				<Revision>
+					<UnitType>BCI4A</UnitType>
+					<MinVersion>2.4.00</MinVersion>
 					<MaxVersion>9</MaxVersion>
 					<UnitSpecName>BCN4B.xml</UnitSpecName>
 					<ClassName>CBusNeoInputUnit</ClassName>
@@ -17003,11 +17024,18 @@
 					<MaxVersion>1.3.0</MaxVersion>
 					<UnitSpecName>DIMDD8.xml</UnitSpecName>
 					<ClassName>CBus3DinDigDimmerUnit</ClassName>
+				</Revision>
+				<Revision>
+					<UnitType>DIMDD8</UnitType>
+					<MinVersion>1.4.0</MinVersion>
+					<MaxVersion>1.4.0</MaxVersion>
+					<UnitSpecName>DIMDD8.xml</UnitSpecName>
+					<ClassName>CBus3DinDigDimmerUnit</ClassName>
 					<IsDefault>true</IsDefault>
 				</Revision>
 				<Revision>
 					<UnitType>DIMDD8</UnitType>
-					<MinVersion>1.3.01</MinVersion>
+					<MinVersion>1.4.01</MinVersion>
 					<MaxVersion>9</MaxVersion>
 					<UnitSpecName>DIMDD8.xml</UnitSpecName>
 					<ClassName>CBus3DinDigDimmerUnit</ClassName>
@@ -17086,11 +17114,18 @@
 					<MaxVersion>1.3.0</MaxVersion>
 					<UnitSpecName>DIMDD4.xml</UnitSpecName>
 					<ClassName>CBus3DinDigDimmerUnit</ClassName>
+				</Revision>
+				<Revision>
+					<UnitType>DIMDD4</UnitType>
+					<MinVersion>1.4.0</MinVersion>
+					<MaxVersion>1.4.0</MaxVersion>
+					<UnitSpecName>DIMDD4.xml</UnitSpecName>
+					<ClassName>CBus3DinDigDimmerUnit</ClassName>
 					<IsDefault>true</IsDefault>
 				</Revision>
 				<Revision>
 					<UnitType>DIMDD4</UnitType>
-					<MinVersion>1.3.01</MinVersion>
+					<MinVersion>1.4.01</MinVersion>
 					<MaxVersion>9</MaxVersion>
 					<UnitSpecName>DIMDD4.xml</UnitSpecName>
 					<ClassName>CBus3DinDigDimmerUnit</ClassName>
@@ -17139,11 +17174,18 @@
 					<MaxVersion>1.0.99</MaxVersion>
 					<UnitSpecName>DIMDD4.xml</UnitSpecName>
 					<ClassName>CBus3DinDigHighPowerDimmerUnit</ClassName>
-					<IsDefault>true</IsDefault>
 				</Revision>
 				<Revision>
 					<UnitType>DIMDH4</UnitType>
 					<MinVersion>1.1.0</MinVersion>
+					<MaxVersion>1.1.99</MaxVersion>
+					<UnitSpecName>DIMDD4.xml</UnitSpecName>
+					<ClassName>CBus3DinDigHighPowerDimmerUnit</ClassName>
+					<IsDefault>true</IsDefault>
+				</Revision>
+				<Revision>
+					<UnitType>DIMDH4</UnitType>
+					<MinVersion>1.2.0</MinVersion>
 					<MaxVersion>9</MaxVersion>
 					<UnitSpecName>DIMDD4.xml</UnitSpecName>
 					<ClassName>CBus3DinDigHighPowerDimmerUnit</ClassName>
@@ -21835,11 +21877,18 @@
 				<MaxVersion>1.0.0</MaxVersion>
 				<UnitSpecName>RELDN16A.xml</UnitSpecName>
 				<ClassName>CBus3DinRelayUnit</ClassName>
+			</Revision>
+			<Revision>
+				<UnitType>RELDN16A</UnitType>
+				<MinVersion>1.1.0</MinVersion>
+				<MaxVersion>1.1.0</MaxVersion>
+				<UnitSpecName>RELDN16A.xml</UnitSpecName>
+				<ClassName>CBus3DinRelayUnit</ClassName>
 				<IsDefault>true</IsDefault>
 			</Revision>
 			<Revision>
 				<UnitType>RELDN16A</UnitType>
-				<MinVersion>1.0.1</MinVersion>
+				<MinVersion>1.1.1</MinVersion>
 				<MaxVersion>9</MaxVersion>
 				<UnitSpecName>RELDN16A.xml</UnitSpecName>
 				<ClassName>CBus3DinRelayUnit</ClassName>
@@ -21880,11 +21929,18 @@
 				<MaxVersion>1.0.0</MaxVersion>
 				<UnitSpecName>RELDN8A.xml</UnitSpecName>
 				<ClassName>CBus3DinRelayUnit</ClassName>
+			</Revision>
+		    <Revision>
+				<UnitType>RELDN8A</UnitType>
+				<MinVersion>1.1.0</MinVersion>
+				<MaxVersion>1.1.0</MaxVersion>
+				<UnitSpecName>RELDN8A.xml</UnitSpecName>
+				<ClassName>CBus3DinRelayUnit</ClassName>
 				<IsDefault>true</IsDefault>
 			</Revision>
 			<Revision>
 				<UnitType>RELDN8A</UnitType>
-				<MinVersion>1.0.1</MinVersion>
+				<MinVersion>1.1.1</MinVersion>
 				<MaxVersion>9</MaxVersion>
 				<UnitSpecName>RELDN8A.xml</UnitSpecName>
 				<ClassName>CBus3DinRelayUnit</ClassName>
@@ -21925,11 +21981,18 @@
 				<MaxVersion>1.0.0</MaxVersion>
 				<UnitSpecName>RELDN4A.xml</UnitSpecName>
 				<ClassName>CBus3DinRelayUnit</ClassName>
+			</Revision>
+		    <Revision>
+				<UnitType>RELDN4A</UnitType>
+				<MinVersion>1.1.0</MinVersion>
+				<MaxVersion>1.1.0</MaxVersion>
+				<UnitSpecName>RELDN4A.xml</UnitSpecName>
+				<ClassName>CBus3DinRelayUnit</ClassName>
 				<IsDefault>true</IsDefault>
 			</Revision>
 			<Revision>
 				<UnitType>RELDN4A</UnitType>
-				<MinVersion>1.0.1</MinVersion>
+				<MinVersion>1.1.1</MinVersion>
 				<MaxVersion>9</MaxVersion>
 				<UnitSpecName>RELDN4A.xml</UnitSpecName>
 				<ClassName>CBus3DinRelayUnit</ClassName>
@@ -28875,11 +28938,18 @@
 					<MaxVersion>1.12.0</MaxVersion>
 					<UnitSpecName>SYS_DAL2.xml</UnitSpecName>
 					<ClassName>CBusDali2Gateway</ClassName>
+				</Revision>
+				<Revision>
+					<UnitType>SYS_DAL2</UnitType>
+					<MinVersion>1.13.0</MinVersion>
+					<MaxVersion>1.13.0</MaxVersion>
+					<UnitSpecName>SYS_DAL2.xml</UnitSpecName>
+					<ClassName>CBusDali2Gateway</ClassName>
 					<IsDefault>true</IsDefault>
 				</Revision>
 				<Revision>
 					<UnitType>SYS_DAL2</UnitType>
-					<MinVersion>1.12.01</MinVersion>
+					<MinVersion>1.13.01</MinVersion>
 					<MaxVersion>9</MaxVersion>
 					<UnitSpecName>SYS_DAL2.xml</UnitSpecName>
 					<ClassName>CBusDali2Gateway</ClassName>
@@ -37090,14 +37160,22 @@
 					<MaxVersion>2.6.99</MaxVersion>
 					<UnitSpecName>RELSM8.xml</UnitSpecName>
 					<ClassName>CBusDinProRelayUnit</ClassName>
-					<IsDefault>true</IsDefault>
 				</Revision>
 				<Revision>
 					<UnitType>RELSM8</UnitType>
 					<MinVersion>2.7.00</MinVersion>
+					<MaxVersion>2.7.99</MaxVersion>
+					<UnitSpecName>RELSM8.xml</UnitSpecName>
+					<ClassName>CBusDinProRelayUnit</ClassName>
+					<IsDefault>true</IsDefault>
+				</Revision>
+				<Revision>
+					<UnitType>RELSM8</UnitType>
+					<MinVersion>2.8.00</MinVersion>
 					<MaxVersion>9</MaxVersion>
 					<UnitSpecName>RELSM8.xml</UnitSpecName>
 					<ClassName>CBusDinProRelayUnit</ClassName>
+					<IsInternal>true</IsInternal>
 				</Revision>
 			</FirmwareRevisions>
 			<InputCount>0</InputCount>
@@ -38550,6 +38628,13 @@
 					<MaxVersion>9</MaxVersion>
 					<UnitSpecName>NCC.xml</UnitSpecName>
 					<ClassName>CBusLoraxNccUnit</ClassName>
+				</Revision>
+				<Revision>
+					<UnitType>SYS_SHAC</UnitType>
+					<MinVersion>1.19.00</MinVersion>
+					<MaxVersion>9</MaxVersion>
+					<UnitSpecName>NCC.xml</UnitSpecName>
+					<ClassName>CBusLoraxNccUnit</ClassName>
 					<IsDefault>true</IsDefault>
 				</Revision>
 			</FirmwareRevisions>
@@ -38642,6 +38727,13 @@
 					<MaxVersion>9</MaxVersion>
 					<UnitSpecName>NCC.xml</UnitSpecName>
 					<ClassName>CBusLoraxNccUnit</ClassName>
+				</Revision>
+				<Revision>
+					<UnitType>SYS_NAC</UnitType>
+					<MinVersion>1.19.00</MinVersion>
+					<MaxVersion>9</MaxVersion>
+					<UnitSpecName>NCC.xml</UnitSpecName>
+					<ClassName>CBusLoraxNccUnit</ClassName>
 					<IsDefault>true</IsDefault>
 				</Revision>
 			</FirmwareRevisions>
@@ -38780,6 +38872,13 @@
 				</Revision>
 				<Revision>
 					<UnitType>SYS_NAC2</UnitType>
+					<MinVersion>1.19.00</MinVersion>
+					<MaxVersion>9</MaxVersion>
+					<UnitSpecName>NCC.xml</UnitSpecName>
+					<ClassName>CBusLoraxNccUnit</ClassName>
+				</Revision>
+				<Revision>
+					<UnitType>SYS_NAC2</UnitType>
 					<MinVersion>2.00.00</MinVersion>
 					<MaxVersion>9</MaxVersion>
 					<UnitSpecName>NCC.xml</UnitSpecName>
@@ -38798,7 +38897,29 @@
 					<MaxVersion>9</MaxVersion>
 					<UnitSpecName>NCC.xml</UnitSpecName>
 					<ClassName>CBusLoraxNccUnit</ClassName>
+				</Revision>
+				<Revision>
+					<UnitType>SYS_NAC2</UnitType>
+					<MinVersion>2.4.00</MinVersion>
+					<MaxVersion>9</MaxVersion>
+					<UnitSpecName>NCC.xml</UnitSpecName>
+					<ClassName>CBusLoraxNccUnit</ClassName>
+				</Revision>
+				<Revision>
+					<UnitType>SYS_NAC2</UnitType>
+					<MinVersion>2.5.00</MinVersion>
+					<MaxVersion>2.5.99</MaxVersion>
+					<UnitSpecName>NCC.xml</UnitSpecName>
+					<ClassName>CBusLoraxNccUnit</ClassName>
 					<IsDefault>true</IsDefault>
+				</Revision>
+				<Revision>
+					<UnitType>SYS_NAC2</UnitType>
+					<MinVersion>2.6.00</MinVersion>
+					<MaxVersion>9</MaxVersion>
+					<UnitSpecName>NCC.xml</UnitSpecName>
+					<ClassName>CBusLoraxNccUnit</ClassName>
+					<IsInternal>true</IsInternal>
 				</Revision>
 			</FirmwareRevisions>
 			<InputCount>0</InputCount>
@@ -38944,6 +39065,13 @@
 				</Revision>
 				<Revision>
 					<UnitType>SYS_AC2</UnitType>
+					<MinVersion>1.19.00</MinVersion>
+					<MaxVersion>9</MaxVersion>
+					<UnitSpecName>NCC.xml</UnitSpecName>
+					<ClassName>CBusLoraxNccUnit</ClassName>
+				</Revision>
+				<Revision>
+					<UnitType>SYS_AC2</UnitType>
 					<MinVersion>2.00.00</MinVersion>
 					<MaxVersion>9</MaxVersion>
 					<UnitSpecName>NCC.xml</UnitSpecName>
@@ -38962,7 +39090,29 @@
 					<MaxVersion>9</MaxVersion>
 					<UnitSpecName>NCC.xml</UnitSpecName>
 					<ClassName>CBusLoraxNccUnit</ClassName>
+				</Revision>
+				<Revision>
+					<UnitType>SYS_AC2</UnitType>
+					<MinVersion>2.4.00</MinVersion>
+					<MaxVersion>9</MaxVersion>
+					<UnitSpecName>NCC.xml</UnitSpecName>
+					<ClassName>CBusLoraxNccUnit</ClassName>
+				</Revision>
+				<Revision>
+					<UnitType>SYS_AC2</UnitType>
+					<MinVersion>2.5.00</MinVersion>
+					<MaxVersion>2.5.99</MaxVersion>
+					<UnitSpecName>NCC.xml</UnitSpecName>
+					<ClassName>CBusLoraxNccUnit</ClassName>
 					<IsDefault>true</IsDefault>
+				</Revision>
+				<Revision>
+					<UnitType>SYS_AC2</UnitType>
+					<MinVersion>2.6.00</MinVersion>
+					<MaxVersion>9</MaxVersion>
+					<UnitSpecName>NCC.xml</UnitSpecName>
+					<ClassName>CBusLoraxNccUnit</ClassName>
+					<IsInternal>true</IsInternal>
 				</Revision>
 			</FirmwareRevisions>
 			<InputCount>0</InputCount>
@@ -39105,6 +39255,13 @@
 					<MaxVersion>9</MaxVersion>
 					<UnitSpecName>NCC.xml</UnitSpecName>
 					<ClassName>CBusLoraxNccUnit</ClassName>
+				</Revision>
+				<Revision>
+					<UnitType>SYS_NAC</UnitType>
+					<MinVersion>1.19.00</MinVersion>
+					<MaxVersion>9</MaxVersion>
+					<UnitSpecName>NCC.xml</UnitSpecName>
+					<ClassName>CBusLoraxNccUnit</ClassName>
 					<IsDefault>true</IsDefault>
 				</Revision>
 			</FirmwareRevisions>
@@ -39237,6 +39394,13 @@
 				<Revision>
 					<UnitType>SYS_SHAC</UnitType>
 					<MinVersion>1.18.00</MinVersion>
+					<MaxVersion>9</MaxVersion>
+					<UnitSpecName>NCC.xml</UnitSpecName>
+					<ClassName>CBusLoraxNccUnit</ClassName>
+				</Revision>
+				<Revision>
+					<UnitType>SYS_SHAC</UnitType>
+					<MinVersion>1.19.00</MinVersion>
 					<MaxVersion>9</MaxVersion>
 					<UnitSpecName>NCC.xml</UnitSpecName>
 					<ClassName>CBusLoraxNccUnit</ClassName>
@@ -39764,7 +39928,6 @@
 					<MaxVersion>1.8.99</MaxVersion>
 					<UnitSpecName>KEYGL5.xml</UnitSpecName>
 					<ClassName>CBusEdlt</ClassName>
-					<IsDefault>true</IsDefault>
 				</Revision>
 				<Revision>
 					<UnitType>KEYGL5</UnitType>
@@ -39788,7 +39951,7 @@
 					<MaxVersion>4.99.99</MaxVersion>
 					<UnitSpecName>KEYGL5_2.xml</UnitSpecName>
 					<ClassName>CBus3NccEdltInputUnit</ClassName>
-					<IsInternal>true</IsInternal>
+					<IsDefault>true</IsDefault>
 				</Revision>
 				<Revision>
 					<UnitType>KEYGL5</UnitType>

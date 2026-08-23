@@ -666,6 +666,8 @@ CONFIG SAVE - Save the current config parameters to either a project db or a
 CONFIG SET - Set the value of a configuration parameter
 CONFIG OBGET - Get the value of a configuration parameter for a scope object
 CONFIG OBSET - Set the value of a configuration parameter for a scope object
+CONFIG INI - Used to get and set values in the cgate.ini file. It provides
+  two commands: CONFIG INI SET and CONFIG INI GET.
 ~#~
 CONFIG GET
 Syntax:
