@@ -264,33 +264,15 @@ func main() {
 		cmdSession.mu.Unlock()
 	}()
 
-	// Routes — use a mux so we can strip any ingress prefix
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Serve console.html for the root of any path prefix
-		if r.URL.Path == "/" || strings.HasSuffix(r.URL.Path, "/") {
-			data, _ := consoleHTML.ReadFile("console.html")
-			w.Header().Set("Content-Type", "text/html")
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	})
-	mux.HandleFunc("/cgate", handleCGate)
-	mux.HandleFunc("/health", handleHealth)
-	mux.Handle("/ws", websocket.Handler(handleWS))
-
-	// Wrap with a handler that strips the ingress path prefix
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// HA ingress sends X-Ingress-Path header with the base path
-		if prefix := r.Header.Get("X-Ingress-Path"); prefix != "" {
-			r.URL.Path = strings.TrimPrefix(r.URL.Path, prefix)
-			if r.URL.Path == "" {
-				r.URL.Path = "/"
-			}
-		}
-		mux.ServeHTTP(w, r)
+	// Routes
+	http.HandleFunc("/cgate", handleCGate)
+	http.HandleFunc("/health", handleHealth)
+	http.Handle("/ws", websocket.Handler(handleWS))
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		data, _ := consoleHTML.ReadFile("console.html")
+		w.Header().Set("Content-Type", "text/html")
+		w.Write(data)
 	})
 
-	log.Fatal(http.ListenAndServe(listenAddr, handler))
+	log.Fatal(http.ListenAndServe(listenAddr, nil))
 }
