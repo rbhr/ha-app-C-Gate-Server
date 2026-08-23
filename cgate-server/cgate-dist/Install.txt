@@ -1,5 +1,5 @@
 
-Clipsal C-Gate 3.7.0 build 2285
+Clipsal C-Gate 3.8.0 build 2348
 
 Brief Installation instructions
 

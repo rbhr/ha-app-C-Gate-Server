@@ -12,3 +12,6 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Local analysis output
+graphify-out/

@@ -2,7 +2,7 @@
 Copyright 2022 Schneider Electric (Australia) Pty Ltd
 All Rights Reserved.
 Schneider Electric C-Gate
-Version: 3.7.0
-Build:	2285
-Date:	20260219-0757
+Version: 3.8.0
+Build:	2348
+Date:	20260617-1056
 		
