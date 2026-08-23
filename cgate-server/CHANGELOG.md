@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.4
+
+- Fixed the ingress panel showing the Home Assistant dashboard instead of the
+  C-Gate console. Supervisor builds `ingress_url` by joining the session path
+  with the add-on's `ingress_entry`, so the request reaches the add-on as `//`.
+  The web bridge routed on `http.ServeMux`, which answers `301` to the cleaned
+  path when the request path is not already clean — sending the panel iframe to
+  `/` on the Home Assistant origin. Routing is now explicit and never redirects.
+- The web bridge now logs every request and the path it routed to, so ingress
+  problems are visible in the add-on log.
+
 ## 1.1.3
 
 - Updated C-Gate Server to v3.8.0 (build 2348)

@@ -12,6 +12,26 @@ env:
   IMAGE_NAME: cgate-server
 
 jobs:
+  test:
+    name: Go bridge tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+
+      - name: Test
+        working-directory: cgate-server/web
+        run: |
+          go mod init cgate-web
+          go get golang.org/x/net/websocket
+          go vet ./...
+          go test -v ./...
+
   init:
     name: Prepare build matrix
     runs-on: ubuntu-latest
