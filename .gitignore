@@ -15,3 +15,8 @@ Thumbs.db
 
 # Local analysis output
 graphify-out/
+
+# Go module files are synthesised at build time (see Dockerfile / CI),
+# not committed — running go tooling locally recreates them.
+cgate-server/web/go.mod
+cgate-server/web/go.sum

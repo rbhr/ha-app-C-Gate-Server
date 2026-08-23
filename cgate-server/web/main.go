@@ -25,6 +25,10 @@ const (
 	cgateStatusPort  = "20025"
 	listenAddr       = ":8980"
 
+	// Home Assistant ingress session path prefix, stripped if the proxy
+	// passes it through to us.
+	ingressPrefix = "/api/hassio_ingress/"
+
 	// TCP keepalive interval for long-lived connections
 	keepAliveInterval = 30 * time.Second
 
@@ -250,6 +254,59 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
+func serveConsole(w http.ResponseWriter, r *http.Request) {
+	data, _ := consoleHTML.ReadFile("console.html")
+	w.Header().Set("Content-Type", "text/html")
+	w.Write(data)
+}
+
+// normalizePath makes routing independent of how Home Assistant's ingress
+// proxy presents the request.
+//
+// Supervisor builds ingress_url by joining the session path with the add-on's
+// ingress_entry, which yields a trailing double slash ("/api/hassio_ingress/
+// <token>//") and reaches us as "//". It also normally strips the session
+// prefix, but that has not been consistent, so strip it here if present.
+//
+// This must not be done with http.ServeMux: it cleans the request path and
+// answers 301 to the cleaned path whenever the two differ. Under ingress that
+// redirect points the iframe at "/" on the Home Assistant origin, which loads
+// the HA dashboard inside the add-on panel instead of this console.
+func normalizePath(p string) string {
+	for strings.Contains(p, "//") {
+		p = strings.ReplaceAll(p, "//", "/")
+	}
+	if rest, ok := strings.CutPrefix(p, ingressPrefix); ok {
+		if i := strings.Index(rest, "/"); i >= 0 {
+			p = rest[i:]
+		} else {
+			p = "/"
+		}
+	}
+	if p == "" {
+		p = "/"
+	}
+	return p
+}
+
+func route(wsHandler http.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p := normalizePath(r.URL.Path)
+		log.Printf("%s %s -> %s", r.Method, r.URL.Path, p)
+
+		switch p {
+		case "/cgate":
+			handleCGate(w, r)
+		case "/health":
+			handleHealth(w, r)
+		case "/ws":
+			wsHandler.ServeHTTP(w, r)
+		default:
+			serveConsole(w, r)
+		}
+	}
+}
+
 func main() {
 	log.Printf("C-Gate Web Console starting on %s", listenAddr)
 
@@ -264,15 +321,6 @@ func main() {
 		cmdSession.mu.Unlock()
 	}()
 
-	// Routes
-	http.HandleFunc("/cgate", handleCGate)
-	http.HandleFunc("/health", handleHealth)
-	http.Handle("/ws", websocket.Handler(handleWS))
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		data, _ := consoleHTML.ReadFile("console.html")
-		w.Header().Set("Content-Type", "text/html")
-		w.Write(data)
-	})
-
-	log.Fatal(http.ListenAndServe(listenAddr, nil))
+	// Route explicitly rather than via http.ServeMux — see normalizePath.
+	log.Fatal(http.ListenAndServe(listenAddr, route(websocket.Handler(handleWS))))
 }
