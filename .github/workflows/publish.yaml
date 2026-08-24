@@ -65,6 +65,10 @@ jobs:
           version: ${{ needs.init.outputs.version }}
           push: true
           container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          # build-image does not set revision; without this, published images
+          # record no commit provenance.
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
 
   manifest:
     name: Publish multi-arch manifest
