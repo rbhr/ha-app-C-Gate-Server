@@ -85,12 +85,15 @@ jobs:
           load: true
           cosign: false
           container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
 
       - name: Verify add-on labels
         env:
           IMAGE: ${{ matrix.image }}:${{ needs.init.outputs.version }}
           EXPECTED_VERSION: ${{ needs.init.outputs.version }}
           EXPECTED_ARCH: ${{ matrix.arch }}
+          EXPECTED_REVISION: ${{ github.sha }}
         run: |
           echo "Inspecting ${IMAGE}"
           labels="$(docker inspect --format '{{json .Config.Labels}}' "${IMAGE}")"
@@ -118,5 +121,6 @@ jobs:
           check org.opencontainers.image.version "${EXPECTED_VERSION}"
           check org.opencontainers.image.source ""
           check org.opencontainers.image.created ""
+          check org.opencontainers.image.revision "${EXPECTED_REVISION}"
 
           exit "${fail}"
