@@ -26,7 +26,7 @@ with C-Gate — useful for debugging, diagnostics, and manual control.
 
 The C-Gate project name corresponding to your C-Bus installation. The default
 is `HOME`. Each project stores its configuration in a separate database under
-`/data/tag/<project_name>/`.
+`/data/projects/<project_name>/`.
 
 ### Interface IP
 
@@ -104,7 +104,7 @@ The console provides:
 ### Project tag databases
 
 **Tag database** in the console header opens a panel listing every project in
-`/data/tag`, with how many files it holds, its total size, and when its database
+`/data/projects`, with how many files it holds, its total size, and when its database
 was last written.
 
 **Download** offers each project as **.db**, the database on its own, and — for a
@@ -183,10 +183,25 @@ add-on updates and restarts. On first run, default configuration files are
 copied automatically.
 
 - `/data/config/` — access.txt, C-groups.txt, logback.xml
-- `/data/tag/` — C-Gate project databases, as `<project>/<project>.db`
+- `/data/projects/` — C-Gate projects, as `<project>/<project>.db` plus
+  whatever else the project keeps beside its database
+- `/data/tag/` — C-Gate's legacy XML tag database directory
 
 Project databases can be backed up and replaced from the web console — see
 **Project tag databases** above.
+
+### Upgrading from 1.1.7 or earlier
+
+Earlier versions kept project databases in `/data/tag`, but C-Gate 3.8 reads
+projects from its `Projects` directory and never looks in the tag directory for
+one. C-Gate therefore ran with no project loaded — `project dir` reported none —
+and anything it saved was written inside the container and lost on the next
+restart or update.
+
+Version 1.1.8 moves project databases to `/data/projects`, which is linked into
+place as C-Gate's `Projects` directory. The move happens automatically on first
+start and is logged; the add-on log lists the projects it can see once it is
+done. Nothing is deleted from `/data/tag`.
 
 ## Troubleshooting
 

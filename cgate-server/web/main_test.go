@@ -115,13 +115,13 @@ func TestRouteDispatch(t *testing.T) {
 
 // --- Project tag databases ---
 
-// useTempTagDir points the tag database handlers at a temporary directory.
-func useTempTagDir(t *testing.T) string {
+// useTempProjectsDir points the project handlers at a temporary directory.
+func useTempProjectsDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	prevDir, prevActive := tagDir, activeProject
-	tagDir, activeProject = dir, "HOME"
-	t.Cleanup(func() { tagDir, activeProject = prevDir, prevActive })
+	prevDir, prevActive := projectsDir, activeProject
+	projectsDir, activeProject = dir, "HOME"
+	t.Cleanup(func() { projectsDir, activeProject = prevDir, prevActive })
 	return dir
 }
 
@@ -161,16 +161,15 @@ func uploadRequest(t *testing.T, project, filename string, content []byte) *http
 }
 
 func TestListProjects(t *testing.T) {
-	dir := useTempTagDir(t)
+	dir := useTempProjectsDir(t)
 
-	// C-Gate's own layout, the flat layout older add-on versions left behind,
-	// and files that are not project databases.
+	// Only a directory holding a database of the same name is a project C-Gate
+	// can see; everything else here is not one.
 	writeDB(t, filepath.Join(dir, "HOME", "HOME.db"), "home")
-	writeDB(t, filepath.Join(dir, "EXAMPLE.db"), "example")
+	writeDB(t, filepath.Join(dir, "EXAMPLE", "EXAMPLE.db"), "example")
 	writeDB(t, filepath.Join(dir, "HOME", "HOME.db.bak"), "old home")
-	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeDB(t, filepath.Join(dir, "STRAY.db"), "loose file, not in a directory")
+	writeDB(t, filepath.Join(dir, "MISMATCH", "OTHER.db"), "wrong name for its directory")
 	if err := os.MkdirAll(filepath.Join(dir, "EMPTY"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -192,30 +191,21 @@ func TestListProjects(t *testing.T) {
 	}
 }
 
-func TestDBPathPrefersCGateLayout(t *testing.T) {
-	dir := useTempTagDir(t)
+// The layout is not negotiable: C-Gate reads <projects>/<name>/<name>.db and
+// silently cannot find a database written anywhere else.
+func TestDBPathIsTheLayoutCGateReads(t *testing.T) {
+	dir := useTempProjectsDir(t)
 
-	// Nothing on disk yet: uploads land in C-Gate's own layout.
-	if got, want := dbPath("NEW"), filepath.Join(dir, "NEW", "NEW.db"); got != want {
-		t.Errorf("dbPath(NEW) = %q, want %q", got, want)
+	if got, want := dbPath("YELMAH"), filepath.Join(dir, "YELMAH", "YELMAH.db"); got != want {
+		t.Errorf("dbPath(YELMAH) = %q, want %q", got, want)
 	}
-
-	// A flat database from an older add-on version is used where it lies, so
-	// an upload replaces the file C-Gate is actually reading.
-	writeDB(t, filepath.Join(dir, "OLD.db"), "old")
-	if got, want := dbPath("OLD"), filepath.Join(dir, "OLD.db"); got != want {
-		t.Errorf("dbPath(OLD) = %q, want %q", got, want)
-	}
-
-	// With both, the nested one wins.
-	writeDB(t, filepath.Join(dir, "OLD", "OLD.db"), "new")
-	if got, want := dbPath("OLD"), filepath.Join(dir, "OLD", "OLD.db"); got != want {
-		t.Errorf("dbPath(OLD) with both layouts = %q, want %q", got, want)
+	if got, want := projectDir("YELMAH"), filepath.Join(dir, "YELMAH"); got != want {
+		t.Errorf("projectDir(YELMAH) = %q, want %q", got, want)
 	}
 }
 
 func TestTagDownload(t *testing.T) {
-	dir := useTempTagDir(t)
+	dir := useTempProjectsDir(t)
 	writeDB(t, filepath.Join(dir, "HOME", "HOME.db"), "home")
 	handler := route(http.NotFoundHandler())
 
@@ -257,7 +247,7 @@ func TestTagDownload(t *testing.T) {
 }
 
 func TestTagUploadReplacesDatabase(t *testing.T) {
-	dir := useTempTagDir(t)
+	dir := useTempProjectsDir(t)
 	dest := filepath.Join(dir, "HOME", "HOME.db")
 	writeDB(t, dest, "old contents")
 	handler := route(http.NotFoundHandler())
@@ -302,7 +292,7 @@ func TestTagUploadReplacesDatabase(t *testing.T) {
 }
 
 func TestTagUploadCreatesNewProject(t *testing.T) {
-	dir := useTempTagDir(t)
+	dir := useTempProjectsDir(t)
 	handler := route(http.NotFoundHandler())
 
 	// No project field: the name comes from the file name.
@@ -318,7 +308,7 @@ func TestTagUploadCreatesNewProject(t *testing.T) {
 }
 
 func TestTagUploadRejectsBadRequests(t *testing.T) {
-	dir := useTempTagDir(t)
+	dir := useTempProjectsDir(t)
 	dest := filepath.Join(dir, "HOME", "HOME.db")
 	writeDB(t, dest, "untouched")
 	handler := route(http.NotFoundHandler())
@@ -353,7 +343,7 @@ func TestTagUploadRejectsBadRequests(t *testing.T) {
 // A file name is attacker-controlled, so the project it implies is taken from
 // its base name only and can never point outside the tag directory.
 func TestTagUploadIgnoresPathsInFileName(t *testing.T) {
-	dir := useTempTagDir(t)
+	dir := useTempProjectsDir(t)
 
 	rec := httptest.NewRecorder()
 	route(http.NotFoundHandler())(rec,
@@ -368,7 +358,7 @@ func TestTagUploadIgnoresPathsInFileName(t *testing.T) {
 }
 
 func TestTagUploadRequiresPost(t *testing.T) {
-	useTempTagDir(t)
+	useTempProjectsDir(t)
 	rec := httptest.NewRecorder()
 	route(http.NotFoundHandler())(rec, httptest.NewRequest(http.MethodGet, "http://addon:8980/tag/upload", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -377,7 +367,7 @@ func TestTagUploadRequiresPost(t *testing.T) {
 }
 
 func TestTagList(t *testing.T) {
-	dir := useTempTagDir(t)
+	dir := useTempProjectsDir(t)
 	writeDB(t, filepath.Join(dir, "HOME", "HOME.db"), "home")
 
 	rec := httptest.NewRecorder()
@@ -532,7 +522,7 @@ func TestEntryPath(t *testing.T) {
 }
 
 func TestUploadToolkitBackup(t *testing.T) {
-	dir := useTempTagDir(t)
+	dir := useTempProjectsDir(t)
 	handler := route(http.NotFoundHandler())
 
 	// Toolkit names the backup for the day it was taken, so the project can
@@ -575,7 +565,7 @@ func TestUploadArchiveFormats(t *testing.T) {
 		{"tar.gz", "yel.tar.gz", func(t *testing.T) []byte { return tarBytes(t, toolkitProject("YELMAH"), true) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			dir := useTempTagDir(t)
+			dir := useTempProjectsDir(t)
 			rec := httptest.NewRecorder()
 			route(http.NotFoundHandler())(rec, uploadRequest(t, "", c.filename, c.body(t)))
 
@@ -596,7 +586,7 @@ func TestUploadArchiveFormats(t *testing.T) {
 // The whole directory is replaced, so a bitmap that the new project does not
 // have does not linger from the old one — but it is still in the backup.
 func TestUploadArchiveReplacesWholeDirectory(t *testing.T) {
-	dir := useTempTagDir(t)
+	dir := useTempProjectsDir(t)
 	writeDB(t, filepath.Join(dir, "YELMAH", "YELMAH.db"), "old")
 	if err := os.WriteFile(filepath.Join(dir, "YELMAH", "YELMAH-DLTD-Pic9999.bmp"), []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
@@ -632,7 +622,7 @@ func TestUploadArchiveReplacesWholeDirectory(t *testing.T) {
 }
 
 func TestUploadArchiveRefusesEscapingEntries(t *testing.T) {
-	dir := useTempTagDir(t)
+	dir := useTempProjectsDir(t)
 	writeDB(t, filepath.Join(dir, "HOME", "HOME.db"), "untouched")
 
 	rec := httptest.NewRecorder()
@@ -668,7 +658,7 @@ func TestUploadArchiveRejects(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			useTempTagDir(t)
+			useTempProjectsDir(t)
 			rec := httptest.NewRecorder()
 			route(http.NotFoundHandler())(rec, uploadRequest(t, c.project, "upload.zip", zipBytes(t, c.entries)))
 			if rec.Code != http.StatusBadRequest {
@@ -681,7 +671,7 @@ func TestUploadArchiveRejects(t *testing.T) {
 // C-Gate's own PROJECT ARCHIVE zip holds the database as tagdb.db, so the
 // project name has to come from the request.
 func TestUploadCGateArchiveWithName(t *testing.T) {
-	dir := useTempTagDir(t)
+	dir := useTempProjectsDir(t)
 
 	rec := httptest.NewRecorder()
 	route(http.NotFoundHandler())(rec, uploadRequest(t, "HOME", "archive.zip",
@@ -697,7 +687,7 @@ func TestUploadCGateArchiveWithName(t *testing.T) {
 }
 
 func TestTagArchiveDownload(t *testing.T) {
-	dir := useTempTagDir(t)
+	dir := useTempProjectsDir(t)
 	for name, content := range toolkitProject("YELMAH") {
 		if err := os.MkdirAll(filepath.Join(dir, "YELMAH"), 0o755); err != nil {
 			t.Fatal(err)
@@ -733,7 +723,7 @@ func TestTagArchiveDownload(t *testing.T) {
 	}
 
 	// What comes out goes back in.
-	dir2 := useTempTagDir(t)
+	dir2 := useTempProjectsDir(t)
 	rec2 := httptest.NewRecorder()
 	handler(rec2, uploadRequest(t, "", "YELMAH.zip", rec.Body.Bytes()))
 	if rec2.Code != http.StatusOK {
@@ -744,13 +734,12 @@ func TestTagArchiveDownload(t *testing.T) {
 	}
 }
 
-func TestTagArchiveDownloadWithoutDirectory(t *testing.T) {
-	dir := useTempTagDir(t)
-	writeDB(t, filepath.Join(dir, "OLD.db"), "flat")
+func TestTagArchiveDownloadOfUnknownProject(t *testing.T) {
+	useTempProjectsDir(t)
 
 	rec := httptest.NewRecorder()
-	route(http.NotFoundHandler())(rec, httptest.NewRequest(http.MethodGet, "http://addon:8980/tag/archive?project=OLD", nil))
+	route(http.NotFoundHandler())(rec, httptest.NewRequest(http.MethodGet, "http://addon:8980/tag/archive?project=NOPE", nil))
 	if rec.Code != http.StatusNotFound {
-		t.Errorf("archive of a flat project = %d, want 404", rec.Code)
+		t.Errorf("archive of an unknown project = %d, want 404", rec.Code)
 	}
 }

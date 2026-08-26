@@ -49,6 +49,13 @@ const (
 	// Read deadline for stream connections — if nothing arrives within
 	// this window we assume the connection is dead and reconnect.
 	streamReadDeadline = 5 * time.Minute
+
+	// Per-line read deadline for an interactive command.
+	commandReadDeadline = 5 * time.Second
+
+	// Per-line read deadline for the PROJECT commands an upload sends. Stopping
+	// a started project means stopping its networks, which is not instant.
+	projectReadDeadline = 20 * time.Second
 )
 
 // wsHub manages WebSocket clients
@@ -178,6 +185,13 @@ func (s *commandSession) reconnect() {
 }
 
 func (s *commandSession) send(cmd string) ([]string, error) {
+	return s.sendWithin(cmd, commandReadDeadline)
+}
+
+// sendWithin runs a command, allowing deadline for each line of the reply. A
+// slow command is not a dead connection: PROJECT STOP has a project's networks
+// to shut down, which takes far longer than an interactive query.
+func (s *commandSession) sendWithin(cmd string, deadline time.Duration) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -198,7 +212,7 @@ func (s *commandSession) send(cmd string) ([]string, error) {
 	// Read response lines
 	var lines []string
 	for {
-		s.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		s.conn.SetReadDeadline(time.Now().Add(deadline))
 		line, err := s.reader.ReadString('\n')
 		if err != nil {
 			if len(lines) > 0 {
@@ -257,15 +271,20 @@ func handleCGate(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
-// Project tag databases
+// Project databases
 //
-// C-Gate keeps each project in its own directory under the tag directory. The
-// database itself is <project>/<project>.db, a plain SQLite file, but a
-// project built in C-Bus Toolkit keeps more than that beside it — the dynamic
-// labelling bitmaps and their index — and the database is no use without them.
-// So the console moves whole project directories: uploads take Toolkit's own
-// .cbz backup (a flat zip of the project directory), a zip or a tar, as well
-// as a bare .db, and downloads offer either the database or the lot.
+// C-Gate keeps each project in its own directory as <project>/<project>.db, a
+// plain SQLite file, under the Projects directory — a path built into
+// cgate.jar and reached through a symlink to /data/projects. That layout is
+// the only one C-Gate reads: a database anywhere else is invisible to it, so
+// this code never writes one anywhere else.
+//
+// A project built in C-Bus Toolkit keeps more than the database in that
+// directory — the dynamic labelling bitmaps and their index — and the database
+// is no use without them. So the console moves whole project directories:
+// uploads take Toolkit's own .cbz backup (a flat zip of the project
+// directory), a zip or a tar, as well as a bare .db, and downloads offer
+// either the database or the lot.
 // ---------------------------------------------------------------------------
 
 const (
@@ -280,10 +299,6 @@ const (
 
 	dbSuffix     = ".db"
 	backupSuffix = ".bak"
-
-	// How long an upload waits for C-Gate to acknowledge the commands that
-	// close and reopen the project around the swap.
-	cgateCommandTimeout = 15 * time.Second
 )
 
 var (
@@ -296,7 +311,7 @@ var (
 )
 
 // projectNamePattern is deliberately strict: the name is used to build a path
-// under tagDir and is passed to C-Gate as a command argument.
+// under projectsDir and is passed to C-Gate as a command argument.
 var projectNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 
 // genericDBName is what C-Gate's own PROJECT ARCHIVE calls the database inside
@@ -304,8 +319,8 @@ var projectNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 const genericDBName = "tagdb"
 
 var (
-	// tagDir is /data/tag, which run.sh links to /cgate/tag.
-	tagDir = envOr("CGATE_TAG_DIR", "/data/tag")
+	// projectsDir is /data/projects, which run.sh links to /cgate/Projects.
+	projectsDir = envOr("CGATE_PROJECTS_DIR", "/data/projects")
 	// activeProject is the project run.sh configured C-Gate to use.
 	activeProject = envOr("CGATE_PROJECT", "")
 )
@@ -325,30 +340,14 @@ type projectDB struct {
 	Active   bool   `json:"active"`
 }
 
-// dbPath returns the file holding a project's tag database. C-Gate's own
-// layout is <tag>/<project>/<project>.db; older add-on versions left a flat
-// <tag>/<project>.db behind, so an existing flat file wins over a directory
-// that does not exist yet.
-func dbPath(project string) string {
-	nested := filepath.Join(tagDir, project, project+dbSuffix)
-	if _, err := os.Stat(nested); err == nil {
-		return nested
-	}
-	flat := filepath.Join(tagDir, project+dbSuffix)
-	if _, err := os.Stat(flat); err == nil {
-		return flat
-	}
-	return nested
+// projectDir and dbPath are the only layout C-Gate reads. Writing anywhere
+// else produces a database it silently cannot find.
+func projectDir(project string) string {
+	return filepath.Join(projectsDir, project)
 }
 
-// projectDir returns a project's directory, or "" when the project is a flat
-// database with nothing alongside it.
-func projectDir(project string) string {
-	dir := filepath.Join(tagDir, project)
-	if info, err := os.Stat(dir); err == nil && info.IsDir() {
-		return dir
-	}
-	return ""
+func dbPath(project string) string {
+	return filepath.Join(projectDir(project), project+dbSuffix)
 }
 
 // projectContents totals the files stored with a project. A Toolkit project
@@ -369,65 +368,35 @@ func projectContents(dir string) (size int64, files int) {
 	return size, files
 }
 
-// listProjects finds every project database in the tag directory, in both the
-// nested and flat layouts.
+// listProjects reports every project C-Gate can actually see: a directory
+// holding a database of the same name.
 func listProjects() []projectDB {
-	entries, err := os.ReadDir(tagDir)
+	entries, err := os.ReadDir(projectsDir)
 	if err != nil {
-		log.Printf("Tag directory %s unreadable: %v", tagDir, err)
+		log.Printf("Projects directory %s unreadable: %v", projectsDir, err)
 		return nil
 	}
 
-	found := make(map[string]os.FileInfo)
-	add := func(name, path string) {
-		if !projectNamePattern.MatchString(name) {
-			return
-		}
-		if _, seen := found[name]; seen {
-			return
-		}
-		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
-			found[name] = info
-		}
-	}
-
-	// Directories first, so the nested layout wins for a project that has
-	// both, matching dbPath.
+	projects := make([]projectDB, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() {
-			add(e.Name(), filepath.Join(tagDir, e.Name(), e.Name()+dbSuffix))
-		}
-	}
-	for _, e := range entries {
-		if e.IsDir() {
+		name := e.Name()
+		if !e.IsDir() || !projectNamePattern.MatchString(name) {
 			continue
 		}
-		if name, ok := strings.CutSuffix(e.Name(), dbSuffix); ok {
-			add(name, filepath.Join(tagDir, e.Name()))
+		info, err := os.Stat(dbPath(name))
+		if err != nil || !info.Mode().IsRegular() {
+			continue
 		}
-	}
-
-	names := make([]string, 0, len(found))
-	for name := range found {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	projects := make([]projectDB, 0, len(names))
-	for _, name := range names {
-		info := found[name]
-		p := projectDB{
+		size, files := projectContents(projectDir(name))
+		projects = append(projects, projectDB{
 			Name:     name,
-			Size:     info.Size(),
-			Files:    1,
+			Size:     size,
+			Files:    files,
 			Modified: info.ModTime().Format("2006-01-02 15:04:05"),
 			Active:   name == activeProject,
-		}
-		if dir := projectDir(name); dir != "" {
-			p.Size, p.Files = projectContents(dir)
-		}
-		projects = append(projects, p)
+		})
 	}
+	sort.Slice(projects, func(i, j int) bool { return projects[i].Name < projects[j].Name })
 	return projects
 }
 
@@ -446,7 +415,13 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 // retry loop and holds its lock while doing so, so a command sent from an
 // upload is skipped when there is no connection and abandoned if the reply
 // does not arrive. An upload must not hang because C-Gate is down.
-func cgateTry(cmd string) []string {
+func cgateTry(cmd string) []string { return cgateRun(cmd, commandReadDeadline) }
+
+// cgateProject runs one of the PROJECT commands an upload sends, which are
+// allowed longer to answer than an interactive query.
+func cgateProject(cmd string) []string { return cgateRun(cmd, projectReadDeadline) }
+
+func cgateRun(cmd string, deadline time.Duration) []string {
 	if !cmdSession.connected.Load() {
 		return []string{"> " + cmd + "  (skipped — no C-Gate connection)"}
 	}
@@ -457,18 +432,21 @@ func cgateTry(cmd string) []string {
 	}
 	done := make(chan reply, 1)
 	go func() {
-		lines, err := cmdSession.send(cmd)
+		lines, err := cmdSession.sendWithin(cmd, deadline)
 		done <- reply{lines, err}
 	}()
 
+	// The session's own deadline should fire first; this only catches a
+	// goroutine that never gets the session lock at all.
+	abandon := deadline + 5*time.Second
 	select {
 	case r := <-done:
 		if r.err != nil {
 			return []string{"> " + cmd, "error: " + r.err.Error()}
 		}
 		return append([]string{"> " + cmd}, r.lines...)
-	case <-time.After(cgateCommandTimeout):
-		return []string{"> " + cmd, "error: no reply from C-Gate within " + cgateCommandTimeout.String()}
+	case <-time.After(abandon):
+		return []string{"> " + cmd, "error: no reply from C-Gate within " + abandon.String()}
 	}
 }
 
@@ -537,9 +515,8 @@ func handleTagArchive(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dir := projectDir(project)
-	if dir == "" {
-		writeJSONError(w, http.StatusNotFound,
-			"project "+project+" has no project directory — download the database instead")
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		writeJSONError(w, http.StatusNotFound, "no project directory for "+project)
 		return
 	}
 
@@ -872,7 +849,7 @@ func uploadDatabase(w http.ResponseWriter, file multipart.File, header *multipar
 	}
 	log.Printf("Tag database upload: %s (%d bytes, backup=%v)", dest, size, backedUp)
 
-	notes = append(notes, openInCGate(project)...)
+	notes = append(notes, loadInCGate(project)...)
 	announce(append([]string{fmt.Sprintf("uploaded %s (%d bytes)", dest, size)}, notes...))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -897,11 +874,11 @@ func uploadArchive(w http.ResponseWriter, file multipart.File, header *multipart
 		return
 	}
 
-	if err := os.MkdirAll(tagDir, 0o755); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "could not create the tag directory: "+err.Error())
+	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "could not create the projects directory: "+err.Error())
 		return
 	}
-	staging, err := os.MkdirTemp(tagDir, ".incoming-*")
+	staging, err := os.MkdirTemp(projectsDir, ".incoming-*")
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "could not create a staging directory: "+err.Error())
 		return
@@ -962,7 +939,7 @@ func uploadArchive(w http.ResponseWriter, file multipart.File, header *multipart
 	size, files := projectContents(staging)
 	notes := closeInCGate(project)
 
-	dest := filepath.Join(tagDir, project)
+	dest := projectDir(project)
 	backup := dest + backupSuffix
 	backedUp := false
 	if _, err := os.Stat(dest); err == nil {
@@ -986,15 +963,9 @@ func uploadArchive(w http.ResponseWriter, file multipart.File, header *multipart
 		return
 	}
 
-	// A flat <project>.db from an older add-on version would sit alongside the
-	// directory that now supersedes it, so it is moved aside too.
-	flat := filepath.Join(tagDir, project+dbSuffix)
-	if _, err := os.Stat(flat); err == nil {
-		os.Rename(flat, flat+backupSuffix)
-	}
 	log.Printf("Tag project upload: %s (%d files, %d bytes, backup=%v)", dest, files, size, backedUp)
 
-	notes = append(notes, openInCGate(project)...)
+	notes = append(notes, loadInCGate(project)...)
 	announce(append([]string{fmt.Sprintf("uploaded %s (%d files, %d bytes)", dest, files, size)}, notes...))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -1011,14 +982,35 @@ func uploadArchive(w http.ResponseWriter, file multipart.File, header *multipart
 // closeInCGate makes C-Gate let go of a project before its files are replaced;
 // openInCGate puts it back afterwards. C-Gate holds a loaded project in memory
 // and writes it back to disk, so a swap underneath it would be lost.
+//
+// Only a project C-Gate has open needs stopping and closing. Asking it about
+// one it has never heard of — the usual case for a first upload — answers
+// "Project not found", which reads in the console log like the upload failed.
 func closeInCGate(project string) []string {
-	notes := cgateTry("project stop " + project)
-	return append(notes, cgateTry("project close "+project)...)
+	if !openInCGate(project) {
+		return []string{"project " + project + " is not open in C-Gate, so there is nothing to close"}
+	}
+	notes := cgateProject("project stop " + project)
+	return append(notes, cgateProject("project close "+project)...)
 }
 
-func openInCGate(project string) []string {
-	notes := cgateTry("project load " + project)
-	return append(notes, cgateTry("project start "+project)...)
+// openInCGate reports whether C-Gate currently holds the project in memory.
+// PROJECT LIST answers with a line per open project: "123-project=HOME
+// state=stopped".
+func openInCGate(project string) bool {
+	for _, line := range cgateTry("project list") {
+		for _, field := range strings.Fields(line) {
+			if field == "project="+project {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func loadInCGate(project string) []string {
+	notes := cgateProject("project load " + project)
+	return append(notes, cgateProject("project start "+project)...)
 }
 
 func handleWS(ws *websocket.Conn) {

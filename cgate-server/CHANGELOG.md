@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.1.8
+
+- **Fixed project databases never being visible to C-Gate, or persisted.** The
+  add-on kept them in `/data/tag`, but C-Gate 3.8 reads projects from its
+  `Projects` directory — a path built into `cgate.jar` — and treats the tag
+  directory as the legacy XML tag database location only. A running add-on
+  answered `project dir` with "no projects found", and anything C-Gate saved
+  went to `/cgate/Projects` inside the container, so every project change was
+  lost on the next restart or update.
+- Projects now live in `/data/projects`, linked into place as C-Gate's
+  `Projects` directory. Databases in `/data/tag` from earlier versions are moved
+  across automatically on first start, and the add-on log lists the projects it
+  can see once it has finished.
+- Uploads therefore land where C-Gate reads them: after uploading, `project
+  load` and `project start` now succeed rather than reporting that the database
+  does not exist.
+- A first upload no longer logs `Project not found` failures for the stop and
+  close it does not need — C-Gate is asked whether it has the project open
+  first.
+- The `PROJECT` commands sent around an upload are allowed 20 seconds rather
+  than 5 to answer, because stopping a started project means stopping its
+  networks, which was timing out.
+
 ## 1.1.7
 
 - Project uploads now take a whole project directory, not just the database.

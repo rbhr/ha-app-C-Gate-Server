@@ -25,18 +25,66 @@ fi
 if [ ! -d /data/tag ]; then
     echo "First run: initialising /data/tag with defaults"
     mkdir -p /data/tag
-    cp -r /cgate/tag-defaults/* /data/tag/ 2>/dev/null || true
+fi
+
+# --- Project databases ---
+#
+# C-Gate keeps projects in <cgate>/Projects/<name>/<name>.db, a path built into
+# cgate.jar. The tag directory is the legacy XML tag database location and
+# C-Gate never looks there for a project, so the project databases this add-on
+# kept in /data/tag were invisible to it: `project dir` reported no projects,
+# and anything C-Gate saved went to /cgate/Projects inside the container and
+# was lost on the next restart. Projects now live in /data/projects, with the
+# databases from earlier versions moved across on first run.
+
+if [ ! -d /data/projects ]; then
+    echo "First run: initialising /data/projects"
+    mkdir -p /data/projects
+
+    # Project directories earlier versions left in the tag directory.
+    for DIR in /data/tag/*/; do
+        NAME=$(basename "${DIR%/}")
+        [ -f "${DIR}${NAME}.db" ] || continue
+        echo "  moving project ${NAME} out of /data/tag"
+        mv "${DIR%/}" /data/projects/
+    done
+
+    # A bare <name>.db there is a project too; C-Gate wants it in its own
+    # directory.
+    for FILE in /data/tag/*.db; do
+        [ -f "$FILE" ] || continue
+        NAME=$(basename "$FILE" .db)
+        [ -d "/data/projects/${NAME}" ] && continue
+        echo "  moving project ${NAME} out of /data/tag"
+        mkdir -p "/data/projects/${NAME}"
+        mv "$FILE" "/data/projects/${NAME}/${NAME}.db"
+    done
+
+    # Nothing to move on a clean install, so seed the shipped defaults.
+    if [ -z "$(ls -A /data/projects 2>/dev/null)" ]; then
+        echo "  seeding the default project"
+        cp -r /cgate/tag-defaults/* /data/projects/ 2>/dev/null || true
+    fi
 fi
 
 # --- Link persistent directories into C-Gate's expected locations ---
 
-rm -rf /cgate/config /cgate/tag
+rm -rf /cgate/config /cgate/tag /cgate/Projects
 ln -sf /data/config /cgate/config
 ln -sf /data/tag /cgate/tag
+ln -sf /data/projects /cgate/Projects
 mkdir -p /cgate/logs
 
-# Ensure the configured project database directory exists
-mkdir -p "/data/tag/${PROJECT_NAME}"
+# Ensure the configured project's directory exists
+mkdir -p "/data/projects/${PROJECT_NAME}"
+
+echo "Projects on disk:"
+for DIR in /data/projects/*/; do
+    NAME=$(basename "${DIR%/}")
+    if [ -f "${DIR}${NAME}.db" ]; then
+        echo "  ${NAME} ($(ls -1 "$DIR" | wc -l | tr -d ' ') files)"
+    fi
+done
 
 # --- Apply configuration ---
 
@@ -145,9 +193,9 @@ awk '$1 == "interface" || $1 == "remote" || $1 == "user" { print "  " $0 }' "$AC
 
 # --- Start Go web bridge with auto-restart ---
 
-# The bridge serves the project tag databases for download and upload, so it
-# needs to know where they live and which project is in use.
-export CGATE_TAG_DIR=/data/tag
+# The bridge serves the project databases for download and upload, so it needs
+# to know where they live and which project is in use.
+export CGATE_PROJECTS_DIR=/data/projects
 export CGATE_PROJECT="${PROJECT_NAME}"
 
 (
