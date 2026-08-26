@@ -1,14 +1,20 @@
 package main
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"errors"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -179,8 +185,10 @@ func TestListProjects(t *testing.T) {
 	if got[1].Name != "HOME" || !got[1].Active {
 		t.Errorf("got[1] = %+v, want HOME active", got[1])
 	}
-	if want := int64(len(sqliteMagic) + len("home")); got[1].Size != want {
-		t.Errorf("HOME size = %d, want %d", got[1].Size, want)
+	// The size is the whole project directory, and the .db.bak an upload
+	// leaves behind is ours rather than part of the project.
+	if want := int64(len(sqliteMagic) + len("home")); got[1].Size != want || got[1].Files != 1 {
+		t.Errorf("HOME = %d bytes in %d files, want %d in 1", got[1].Size, got[1].Files, want)
 	}
 }
 
@@ -387,5 +395,362 @@ func TestTagList(t *testing.T) {
 	}
 	if resp.Active != "HOME" || len(resp.Projects) != 1 || resp.Projects[0].Name != "HOME" {
 		t.Errorf("/tag = %+v, want the HOME project", resp)
+	}
+}
+
+// --- Archive uploads ---
+
+// zipBytes builds a zip the way Toolkit writes a .cbz: a flat archive of the
+// project directory.
+func zipBytes(t *testing.T, entries map[string][]byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, content := range entries {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// tarBytes builds a tar the way tar(1) does from inside a project directory:
+// entry names carry a "./" prefix and directories get their own entries.
+func tarBytes(t *testing.T, entries map[string][]byte, compress bool) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	var out io.Writer = &buf
+	var gz *gzip.Writer
+	if compress {
+		gz = gzip.NewWriter(&buf)
+		out = gz
+	}
+
+	tw := tar.NewWriter(out)
+	if err := tw.WriteHeader(&tar.Header{Name: "./", Typeflag: tar.TypeDir, Mode: 0o755}); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range entries {
+		if err := tw.WriteHeader(&tar.Header{
+			Name: "./" + name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(content)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if gz != nil {
+		if err := gz.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return buf.Bytes()
+}
+
+func db(payload string) []byte {
+	return append(append([]byte{}, sqliteMagic...), payload...)
+}
+
+// toolkitProject is the shape of a real C-Bus Toolkit backup: the database,
+// the dynamic labelling index, and a bitmap per label.
+func toolkitProject(name string) map[string][]byte {
+	return map[string][]byte{
+		name + ".db":               db("project " + name),
+		name + "-DLTD-index.txt":   []byte("2000,Font=abc,Pic2000.bmp\n"),
+		name + "-DLTD-Pic2000.bmp": []byte("BM bitmap bytes"),
+	}
+}
+
+func TestSniff(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want uploadKind
+	}{
+		{"database", db("x"), kindDatabase},
+		{"zip", zipBytes(t, map[string][]byte{"HOME.db": db("x")}), kindZip},
+		{"tar", tarBytes(t, map[string][]byte{"HOME.db": db("x")}, false), kindTar},
+		{"tar.gz", tarBytes(t, map[string][]byte{"HOME.db": db("x")}, true), kindTarGz},
+		{"text", []byte("this is not a project at all"), kindUnknown},
+		{"empty", nil, kindUnknown},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := sniff(bytes.NewReader(c.in)); got != c.want {
+				t.Errorf("sniff(%s) = %v, want %v", c.name, got, c.want)
+			}
+		})
+	}
+}
+
+func TestEntryPath(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("keeps a Toolkit entry name", func(t *testing.T) {
+		got, err := entryPath(dir, "YELMAH-DLTD-Pic2000.bmp")
+		if err != nil || got != filepath.Join(dir, "YELMAH-DLTD-Pic2000.bmp") {
+			t.Errorf("entryPath = %q, %v", got, err)
+		}
+	})
+
+	t.Run("keeps a subdirectory", func(t *testing.T) {
+		got, err := entryPath(dir, "./XML Backup files/YELMAH.xml")
+		if err != nil || got != filepath.Join(dir, "XML Backup files", "YELMAH.xml") {
+			t.Errorf("entryPath = %q, %v", got, err)
+		}
+	})
+
+	// An entry name is attacker-controlled and must never be rewritten into
+	// something harmless-looking — it is refused.
+	for _, name := range []string{"../evil.db", "../../etc/passwd", "/etc/passwd", "a/../../evil.db", ".."} {
+		t.Run("refuses "+name, func(t *testing.T) {
+			if _, err := entryPath(dir, name); err == nil {
+				t.Errorf("entryPath(%q) was accepted, want refusal", name)
+			}
+		})
+	}
+
+	for _, name := range []string{"./", ".", "/"} {
+		t.Run("skips "+name, func(t *testing.T) {
+			if _, err := entryPath(dir, name); !errors.Is(err, errSkipEntry) {
+				t.Errorf("entryPath(%q) err = %v, want errSkipEntry", name, err)
+			}
+		})
+	}
+}
+
+func TestUploadToolkitBackup(t *testing.T) {
+	dir := useTempTagDir(t)
+	handler := route(http.NotFoundHandler())
+
+	// Toolkit names the backup for the day it was taken, so the project can
+	// only come from the database inside it.
+	rec := httptest.NewRecorder()
+	handler(rec, uploadRequest(t, "", "YELMAH_09_May_2025_2214_1.18.1.cbz",
+		zipBytes(t, toolkitProject("YELMAH"))))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload = %d %q, want 200", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Project string `json:"project"`
+		Files   int    `json:"files"`
+		Backup  bool   `json:"backup"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Project != "YELMAH" || resp.Files != 3 || resp.Backup {
+		t.Errorf("response = %+v, want YELMAH, 3 files, no backup", resp)
+	}
+
+	for _, name := range []string{"YELMAH.db", "YELMAH-DLTD-index.txt", "YELMAH-DLTD-Pic2000.bmp"} {
+		if _, err := os.Stat(filepath.Join(dir, "YELMAH", name)); err != nil {
+			t.Errorf("%s was not installed: %v", name, err)
+		}
+	}
+}
+
+func TestUploadArchiveFormats(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		filename string
+		body     func(*testing.T) []byte
+	}{
+		{"zip", "YELMAH.zip", func(t *testing.T) []byte { return zipBytes(t, toolkitProject("YELMAH")) }},
+		{"tar", "yel.tar", func(t *testing.T) []byte { return tarBytes(t, toolkitProject("YELMAH"), false) }},
+		{"tar.gz", "yel.tar.gz", func(t *testing.T) []byte { return tarBytes(t, toolkitProject("YELMAH"), true) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := useTempTagDir(t)
+			rec := httptest.NewRecorder()
+			route(http.NotFoundHandler())(rec, uploadRequest(t, "", c.filename, c.body(t)))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("upload = %d %q, want 200", rec.Code, rec.Body.String())
+			}
+			got, err := os.ReadFile(filepath.Join(dir, "YELMAH", "YELMAH.db"))
+			if err != nil || !bytes.Equal(got, db("project YELMAH")) {
+				t.Errorf("database = %q (%v), want the uploaded one", got, err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "YELMAH", "YELMAH-DLTD-Pic2000.bmp")); err != nil {
+				t.Errorf("bitmap was not installed: %v", err)
+			}
+		})
+	}
+}
+
+// The whole directory is replaced, so a bitmap that the new project does not
+// have does not linger from the old one — but it is still in the backup.
+func TestUploadArchiveReplacesWholeDirectory(t *testing.T) {
+	dir := useTempTagDir(t)
+	writeDB(t, filepath.Join(dir, "YELMAH", "YELMAH.db"), "old")
+	if err := os.WriteFile(filepath.Join(dir, "YELMAH", "YELMAH-DLTD-Pic9999.bmp"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	route(http.NotFoundHandler())(rec, uploadRequest(t, "", "backup.cbz", zipBytes(t, toolkitProject("YELMAH"))))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload = %d %q, want 200", rec.Code, rec.Body.String())
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "YELMAH", "YELMAH-DLTD-Pic9999.bmp")); !os.IsNotExist(err) {
+		t.Errorf("stale bitmap survived the upload (err = %v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "YELMAH"+backupSuffix, "YELMAH-DLTD-Pic9999.bmp")); err != nil {
+		t.Errorf("stale bitmap is not in the backup: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "YELMAH"+backupSuffix, "YELMAH.db")); err != nil ||
+		!strings.HasSuffix(string(got), "old") {
+		t.Errorf("backup database = %q (%v), want the previous one", got, err)
+	}
+
+	// The staging directory is gone either way.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".incoming-") {
+			t.Errorf("staging directory left behind: %s", e.Name())
+		}
+	}
+}
+
+func TestUploadArchiveRefusesEscapingEntries(t *testing.T) {
+	dir := useTempTagDir(t)
+	writeDB(t, filepath.Join(dir, "HOME", "HOME.db"), "untouched")
+
+	rec := httptest.NewRecorder()
+	route(http.NotFoundHandler())(rec, uploadRequest(t, "", "evil.zip", zipBytes(t, map[string][]byte{
+		"YELMAH.db":     db("x"),
+		"../escaped.db": db("escaped"),
+	})))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("upload = %d %q, want 400", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "escaped.db")); !os.IsNotExist(err) {
+		t.Errorf("an entry escaped the tag directory (err = %v)", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "HOME", "HOME.db")); err != nil ||
+		!strings.HasSuffix(string(got), "untouched") {
+		t.Errorf("existing project = %q (%v), want it left alone", got, err)
+	}
+}
+
+func TestUploadArchiveRejects(t *testing.T) {
+	cases := []struct {
+		name    string
+		project string
+		entries map[string][]byte
+	}{
+		{"no database", "", map[string][]byte{"YELMAH-DLTD-Pic2000.bmp": []byte("BM")}},
+		{"two databases", "", map[string][]byte{"HOME.db": db("a"), "YELMAH.db": db("b")}},
+		{"name does not match the archive", "HOME", toolkitProject("YELMAH")},
+		{"C-Gate generic archive without a name", "", map[string][]byte{"tagdb.db": db("generic")}},
+		{"empty archive", "", map[string][]byte{}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			useTempTagDir(t)
+			rec := httptest.NewRecorder()
+			route(http.NotFoundHandler())(rec, uploadRequest(t, c.project, "upload.zip", zipBytes(t, c.entries)))
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("upload = %d %q, want 400", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// C-Gate's own PROJECT ARCHIVE zip holds the database as tagdb.db, so the
+// project name has to come from the request.
+func TestUploadCGateArchiveWithName(t *testing.T) {
+	dir := useTempTagDir(t)
+
+	rec := httptest.NewRecorder()
+	route(http.NotFoundHandler())(rec, uploadRequest(t, "HOME", "archive.zip",
+		zipBytes(t, map[string][]byte{"tagdb.db": db("generic")})))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload = %d %q, want 200", rec.Code, rec.Body.String())
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "HOME", "HOME.db")); err != nil ||
+		!bytes.Equal(got, db("generic")) {
+		t.Errorf("installed database = %q (%v), want the generic one under the project name", got, err)
+	}
+}
+
+func TestTagArchiveDownload(t *testing.T) {
+	dir := useTempTagDir(t)
+	for name, content := range toolkitProject("YELMAH") {
+		if err := os.MkdirAll(filepath.Join(dir, "YELMAH"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "YELMAH", name), content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := route(http.NotFoundHandler())
+
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "http://addon:8980/tag/archive?project=YELMAH", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("archive = %d, want 200", rec.Code)
+	}
+	if got, want := rec.Header().Get("Content-Disposition"), `attachment; filename="YELMAH.zip"`; got != want {
+		t.Errorf("Content-Disposition = %q, want %q", got, want)
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(zr.File))
+	for _, f := range zr.File {
+		names = append(names, f.Name)
+	}
+	sort.Strings(names)
+	want := []string{"YELMAH-DLTD-Pic2000.bmp", "YELMAH-DLTD-index.txt", "YELMAH.db"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Errorf("archive holds %v, want %v", names, want)
+	}
+
+	// What comes out goes back in.
+	dir2 := useTempTagDir(t)
+	rec2 := httptest.NewRecorder()
+	handler(rec2, uploadRequest(t, "", "YELMAH.zip", rec.Body.Bytes()))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("re-upload = %d %q, want 200", rec2.Code, rec2.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir2, "YELMAH", "YELMAH-DLTD-Pic2000.bmp")); err != nil {
+		t.Errorf("round trip lost the bitmap: %v", err)
+	}
+}
+
+func TestTagArchiveDownloadWithoutDirectory(t *testing.T) {
+	dir := useTempTagDir(t)
+	writeDB(t, filepath.Join(dir, "OLD.db"), "flat")
+
+	rec := httptest.NewRecorder()
+	route(http.NotFoundHandler())(rec, httptest.NewRequest(http.MethodGet, "http://addon:8980/tag/archive?project=OLD", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("archive of a flat project = %d, want 404", rec.Code)
 	}
 }
