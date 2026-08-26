@@ -28,6 +28,26 @@
   #filters { display: flex; gap: 8px; margin-left: auto; }
   #filters label { font-size: 11px; cursor: pointer; user-select: none; }
   #filters input { margin-right: 3px; }
+  .btn { background: #0e639c; color: #fff; border: none; padding: 4px 10px; cursor: pointer; font-family: inherit; font-size: 11px; }
+  .btn:hover { background: #1177bb; }
+  .btn:disabled { background: #3a3a3a; color: #777; cursor: default; }
+  #db-panel { background: #252526; border-bottom: 1px solid #444; padding: 10px 16px; display: none; }
+  #db-panel.open { display: block; }
+  #db-panel h2 { font-size: 12px; color: #569cd6; font-weight: normal; margin-bottom: 6px; }
+  #db-panel .note { font-size: 11px; color: #888; margin-bottom: 8px; }
+  #db-panel code { color: #9cdcfe; font-family: inherit; }
+  #db-list { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 10px; }
+  #db-list th { text-align: left; color: #888; font-weight: normal; font-size: 11px; padding: 2px 10px 4px 0; border-bottom: 1px solid #3a3a3a; }
+  #db-list td { padding: 4px 10px 4px 0; border-bottom: 1px solid #333; }
+  #db-list .active-tag { color: #6a9955; font-size: 11px; }
+  #db-upload { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 8px; border-top: 1px solid #3a3a3a; }
+  #db-upload label { font-size: 11px; color: #888; }
+  #db-upload input[type=text] { background: #1e1e1e; color: #d4d4d4; border: 1px solid #444; padding: 4px 8px; font-family: inherit; font-size: 12px; width: 140px; outline: none; }
+  #db-upload input[type=file] { font-family: inherit; font-size: 11px; color: #d4d4d4; max-width: 260px; }
+  #db-status { font-size: 11px; margin-top: 8px; min-height: 14px; }
+  #db-status.ok { color: #6a9955; }
+  #db-status.err { color: #d16969; }
+  #db-status.busy { color: #dcdcaa; }
 </style>
 </head>
 <body>
@@ -41,6 +61,27 @@
     <label><input type="checkbox" data-stream="command" checked> commands</label>
     <label><input type="checkbox" data-stream="response" checked> responses</label>
   </div>
+  <button id="db-toggle" class="btn">Tag database</button>
+</div>
+
+<div id="db-panel">
+  <h2>Project tag databases</h2>
+  <p class="note">
+    C-Gate holds a loaded project in memory, so send <code>project save</code> before
+    downloading. Uploading replaces the project database on disk — the previous one is
+    kept as <code>&lt;project&gt;.db.bak</code> — then reloads and starts the project.
+  </p>
+  <table id="db-list">
+    <thead><tr><th>Project</th><th>Size</th><th>Modified</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div id="db-upload">
+    <input id="db-file" type="file" accept=".db">
+    <label for="db-project">project</label>
+    <input id="db-project" type="text" placeholder="from file name">
+    <button id="db-send" class="btn">Upload</button>
+  </div>
+  <div id="db-status"></div>
 </div>
 
 <div id="log"></div>
@@ -123,6 +164,119 @@
   }
 
   document.getElementById('send').addEventListener('click', send);
+
+  // --- Tag database panel ---
+  var panel = document.getElementById('db-panel');
+  var dbBody = document.querySelector('#db-list tbody');
+  var dbFile = document.getElementById('db-file');
+  var dbProject = document.getElementById('db-project');
+  var dbSend = document.getElementById('db-send');
+  var dbStatus = document.getElementById('db-status');
+
+  function setStatus(text, cls) {
+    dbStatus.textContent = text;
+    dbStatus.className = cls || '';
+  }
+
+  function fmtSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
+    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  function download(name) {
+    var a = document.createElement('a');
+    a.href = base + '/tag/download?project=' + encodeURIComponent(name);
+    a.download = name + '.db';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  function renderProjects(projects) {
+    dbBody.textContent = '';
+    if (!projects || !projects.length) {
+      var empty = document.createElement('tr');
+      var cell = document.createElement('td');
+      cell.colSpan = 4;
+      cell.textContent = 'No project databases found.';
+      empty.appendChild(cell);
+      dbBody.appendChild(empty);
+      return;
+    }
+    projects.forEach(function(p) {
+      var tr = document.createElement('tr');
+
+      var name = document.createElement('td');
+      name.textContent = p.name;
+      if (p.active) {
+        var badge = document.createElement('span');
+        badge.className = 'active-tag';
+        badge.textContent = '  (in use)';
+        name.appendChild(badge);
+      }
+      tr.appendChild(name);
+
+      var size = document.createElement('td');
+      size.textContent = fmtSize(p.size);
+      tr.appendChild(size);
+
+      var mod = document.createElement('td');
+      mod.textContent = p.modified;
+      tr.appendChild(mod);
+
+      var action = document.createElement('td');
+      var btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.textContent = 'Download';
+      btn.addEventListener('click', function() { download(p.name); });
+      action.appendChild(btn);
+      tr.appendChild(action);
+
+      dbBody.appendChild(tr);
+    });
+  }
+
+  function loadProjects() {
+    return fetch(base + '/tag')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        renderProjects(data.projects);
+        if (!dbProject.value && data.active) dbProject.placeholder = data.active;
+      })
+      .catch(function(err) { setStatus('Could not list projects: ' + err, 'err'); });
+  }
+
+  document.getElementById('db-toggle').addEventListener('click', function() {
+    panel.classList.toggle('open');
+    if (panel.classList.contains('open')) { setStatus(''); loadProjects(); }
+  });
+
+  dbSend.addEventListener('click', function() {
+    var file = dbFile.files[0];
+    if (!file) { setStatus('Choose a .db file first.', 'err'); return; }
+
+    var form = new FormData();
+    form.append('file', file);
+    if (dbProject.value.trim()) form.append('project', dbProject.value.trim());
+
+    dbSend.disabled = true;
+    setStatus('Uploading ' + file.name + '\u2026', 'busy');
+
+    fetch(base + '/tag/upload', { method: 'POST', body: form })
+      .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+      .then(function(res) {
+        if (!res.ok) { setStatus(res.data.error || 'Upload failed.', 'err'); return; }
+        setStatus('Uploaded ' + res.data.project + ' (' + fmtSize(res.data.size) + ')' +
+                  (res.data.backup ? ', previous database kept as .db.bak' : '') +
+                  '. See the log for C-Gate\u2019s response.', 'ok');
+        dbFile.value = '';
+        renderProjects(res.data.projects);
+      })
+      .catch(function(err) { setStatus('Upload failed: ' + err, 'err'); })
+      .then(function() { dbSend.disabled = false; });
+  });
+
   cmd.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') { send(); return; }
     if (e.key === 'ArrowUp') { e.preventDefault(); if (histIdx < history.length - 1) { histIdx++; cmd.value = history[histIdx]; } }

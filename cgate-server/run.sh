@@ -145,6 +145,11 @@ awk '$1 == "interface" || $1 == "remote" || $1 == "user" { print "  " $0 }' "$AC
 
 # --- Start Go web bridge with auto-restart ---
 
+# The bridge serves the project tag databases for download and upload, so it
+# needs to know where they live and which project is in use.
+export CGATE_TAG_DIR=/data/tag
+export CGATE_PROJECT="${PROJECT_NAME}"
+
 (
     while true; do
         /cgate/cgate-web

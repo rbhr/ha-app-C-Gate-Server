@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.6
+
+- The web console can now download and upload project tag databases. **Tag
+  database** in the console header lists the project databases in `/data/tag`
+  and offers each for download; uploading a `.db` file replaces a project's
+  database, which is how a project built in C-Bus Toolkit gets into the add-on
+  without a shell.
+- An upload is validated and written out in full before anything is replaced,
+  the project is stopped and closed in C-Gate around the swap and loaded and
+  started again afterwards, and the previous database is kept alongside as
+  `<project>.db.bak`.
+
 ## 1.1.5
 
 - Fixed Home Assistant being refused by C-Gate on a clean install. C-Gate's
