@@ -182,7 +182,8 @@ Configuration and project databases are stored in `/data/` and persist across
 add-on updates and restarts. On first run, default configuration files are
 copied automatically.
 
-- `/data/config/` — access.txt, C-groups.txt, logback.xml
+- `/data/config/` — access.txt, C-groups.txt, logback.xml, and C-Gate's own
+  C-GateConfig.txt
 - `/data/projects/` — C-Gate projects, as `<project>/<project>.db` plus
   whatever else the project keeps beside its database
 - `/data/tag/` — C-Gate's legacy XML tag database directory
@@ -190,18 +191,32 @@ copied automatically.
 Project databases can be backed up and replaced from the web console — see
 **Project tag databases** above.
 
+### Where C-Gate looks for projects
+
+C-Gate finds projects under its `project.default.dir` property, which lives in
+`C-GateConfig.txt` and so persists in `/data/config` across updates. Its own
+default is `Projects/`, relative to C-Gate's directory inside the container —
+where nothing survives a restart — but an installation may have been pointed
+somewhere else at some point and will then keep looking there.
+
+The add-on sets that property to `/data/projects/` on every start, so the
+location is always the one it manages. The startup log shows it:
+
+```
+Projects:  /data/projects/
+Autostart: HOME
+```
+
+It also sets `project.start` so the configured project is loaded and started
+when C-Gate comes up — unless a startup project has already been set, which is
+left alone.
+
 ### Upgrading from 1.1.7 or earlier
 
-Earlier versions kept project databases in `/data/tag`, but C-Gate 3.8 reads
-projects from its `Projects` directory and never looks in the tag directory for
-one. C-Gate therefore ran with no project loaded — `project dir` reported none —
-and anything it saved was written inside the container and lost on the next
-restart or update.
-
-Version 1.1.8 moves project databases to `/data/projects`, which is linked into
-place as C-Gate's `Projects` directory. The move happens automatically on first
-start and is logged; the add-on log lists the projects it can see once it is
-done. Nothing is deleted from `/data/tag`.
+Project databases used to live in `/data/tag`. They are moved to
+`/data/projects` on the first start after upgrading, and C-Gate is pointed at
+the new location in the same start, so there is nothing to do by hand. The move
+is logged and nothing is deleted from `/data/tag`.
 
 ## Troubleshooting
 
