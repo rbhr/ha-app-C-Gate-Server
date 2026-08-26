@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.1.7
+
+- Project uploads now take a whole project directory, not just the database.
+  A C-Bus Toolkit `.cbz` backup, a `.zip`, or a `.tar`/`.tar.gz` of a project
+  directory all work — which matters because the database is no use without the
+  dynamic labelling bitmaps and index stored beside it, and the previous release
+  moved only the `.db`.
+- An upload is identified by its contents rather than its name, and the project
+  name is read from the database inside the archive, so a Toolkit backup called
+  `YELMAH_09_May_2025_2214_1.18.1.cbz` installs as project `YELMAH` with nothing
+  to fill in.
+- Archives are unpacked into a staging directory and only swapped in once
+  complete; the previous project directory is kept as `<project>.bak`. Entries
+  that would be written outside the project directory are refused, and an
+  archive is capped at 4096 files and 256 MB unpacked.
+- Each project can also be downloaded as a zip of its whole directory, in the
+  same shape as a Toolkit backup. The list now shows the file count and the
+  total size of the project rather than the size of the database alone.
+
 ## 1.1.6
 
 - The web console can now download and upload project tag databases. **Tag

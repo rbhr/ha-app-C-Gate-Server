@@ -1,16 +1,23 @@
 package main
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -252,32 +259,49 @@ func handleCGate(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 // Project tag databases
 //
-// C-Gate keeps each project in its own directory under the tag directory, as
-// <project>/<project>.db — a plain SQLite file. The console exposes those
-// files so a project built in C-Bus Toolkit can be uploaded, and the running
-// one taken away for backup.
+// C-Gate keeps each project in its own directory under the tag directory. The
+// database itself is <project>/<project>.db, a plain SQLite file, but a
+// project built in C-Bus Toolkit keeps more than that beside it — the dynamic
+// labelling bitmaps and their index — and the database is no use without them.
+// So the console moves whole project directories: uploads take Toolkit's own
+// .cbz backup (a flat zip of the project directory), a zip or a tar, as well
+// as a bare .db, and downloads offer either the database or the lot.
 // ---------------------------------------------------------------------------
 
 const (
-	// Project databases run to a few hundred KB. The cap is generous but
-	// bounded so a stray request cannot fill /data.
+	// Project databases run to a few hundred KB and a Toolkit backup to a few
+	// MB. The cap is generous but bounded so a stray request cannot fill
+	// /data.
 	maxUploadBytes = 64 << 20
-	dbSuffix       = ".db"
-	backupSuffix   = ".bak"
+	// An archive is expanded onto disk, so what it unpacks to is bounded
+	// separately from the size of the upload itself.
+	maxUnpackedBytes  = 256 << 20
+	maxArchiveEntries = 4096
+
+	dbSuffix     = ".db"
+	backupSuffix = ".bak"
 
 	// How long an upload waits for C-Gate to acknowledge the commands that
 	// close and reopen the project around the swap.
 	cgateCommandTimeout = 15 * time.Second
 )
 
-// sqliteMagic is the header every C-Gate project database starts with.
-// Checked on upload so the wrong file is rejected before it can replace a
-// working database.
-var sqliteMagic = []byte("SQLite format 3\x00")
+var (
+	// sqliteMagic is the header every C-Gate project database starts with.
+	sqliteMagic = []byte("SQLite format 3\x00")
+	zipMagic    = []byte("PK\x03\x04")
+	gzipMagic   = []byte("\x1f\x8b")
+	// tarMagic sits at offset 257 of the first header block.
+	tarMagic = []byte("ustar")
+)
 
 // projectNamePattern is deliberately strict: the name is used to build a path
 // under tagDir and is passed to C-Gate as a command argument.
 var projectNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
+
+// genericDBName is what C-Gate's own PROJECT ARCHIVE calls the database inside
+// a zip, whichever project it came from.
+const genericDBName = "tagdb"
 
 var (
 	// tagDir is /data/tag, which run.sh links to /cgate/tag.
@@ -296,6 +320,7 @@ func envOr(key, fallback string) string {
 type projectDB struct {
 	Name     string `json:"name"`
 	Size     int64  `json:"size"`
+	Files    int    `json:"files"`
 	Modified string `json:"modified"`
 	Active   bool   `json:"active"`
 }
@@ -314,6 +339,34 @@ func dbPath(project string) string {
 		return flat
 	}
 	return nested
+}
+
+// projectDir returns a project's directory, or "" when the project is a flat
+// database with nothing alongside it.
+func projectDir(project string) string {
+	dir := filepath.Join(tagDir, project)
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return dir
+	}
+	return ""
+}
+
+// projectContents totals the files stored with a project. A Toolkit project
+// keeps its dynamic labelling bitmaps and index alongside the database. The
+// backups an upload leaves behind are ours rather than the project's, so they
+// are left out of the count.
+func projectContents(dir string) (size int64, files int) {
+	filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || strings.HasSuffix(d.Name(), backupSuffix) {
+			return nil
+		}
+		if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
+			size += info.Size()
+			files++
+		}
+		return nil
+	})
+	return size, files
 }
 
 // listProjects finds every project database in the tag directory, in both the
@@ -363,12 +416,17 @@ func listProjects() []projectDB {
 	projects := make([]projectDB, 0, len(names))
 	for _, name := range names {
 		info := found[name]
-		projects = append(projects, projectDB{
+		p := projectDB{
 			Name:     name,
 			Size:     info.Size(),
+			Files:    1,
 			Modified: info.ModTime().Format("2006-01-02 15:04:05"),
 			Active:   name == activeProject,
-		})
+		}
+		if dir := projectDir(name); dir != "" {
+			p.Size, p.Files = projectContents(dir)
+		}
+		projects = append(projects, p)
 	}
 	return projects
 }
@@ -432,10 +490,19 @@ func handleTagList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func handleTagDownload(w http.ResponseWriter, r *http.Request) {
+// requestedProject reads and validates the project named in the query string.
+func requestedProject(r *http.Request) (string, error) {
 	project := strings.TrimSpace(r.URL.Query().Get("project"))
 	if !projectNamePattern.MatchString(project) {
-		writeJSONError(w, http.StatusBadRequest, "invalid project name")
+		return "", errors.New("invalid project name")
+	}
+	return project, nil
+}
+
+func handleTagDownload(w http.ResponseWriter, r *http.Request) {
+	project, err := requestedProject(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -460,13 +527,254 @@ func handleTagDownload(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, name, info.ModTime(), f)
 }
 
-// handleTagUpload replaces a project's tag database with an uploaded file.
-//
-// The file is written to a temporary file in the destination directory first,
-// so a failed or rejected upload never touches the database in place. C-Gate
-// holds an open project in memory and writes it back to disk, so it is told to
-// stop and close the project before the swap, and to load and start it again
-// afterwards. The previous database is kept alongside as <project>.db.bak.
+// handleTagArchive streams a project's whole directory as a zip — the same
+// shape as the .cbz backup Toolkit writes, so it can go straight back in.
+func handleTagArchive(w http.ResponseWriter, r *http.Request) {
+	project, err := requestedProject(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	dir := projectDir(project)
+	if dir == "" {
+		writeJSONError(w, http.StatusNotFound,
+			"project "+project+" has no project directory — download the database instead")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+project+`.zip"`)
+
+	zw := zip.NewWriter(w)
+	defer zw.Close()
+
+	// The response is already streaming, so a failure part way through can
+	// only be logged — the client sees a truncated zip, which will not open.
+	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			return err
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(rel)
+		header.Method = zip.Deflate
+		entry, err := zw.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(entry, f)
+		return err
+	})
+	if err != nil {
+		log.Printf("Tag archive download of %s failed part way: %v", project, err)
+		return
+	}
+	log.Printf("Tag archive download: %s", dir)
+}
+
+// uploadKind is what an uploaded file turned out to be.
+type uploadKind int
+
+const (
+	kindUnknown uploadKind = iota
+	kindDatabase
+	kindZip
+	kindTar
+	kindTarGz
+)
+
+// sniff identifies an upload from its leading bytes rather than its name. A
+// Toolkit backup arrives called YELMAH_09_May_2025_2214_1.18.1.cbz, which says
+// nothing dependable about either the format or the project.
+func sniff(r io.ReaderAt) uploadKind {
+	head := make([]byte, 262)
+	n, _ := r.ReadAt(head, 0)
+	head = head[:n]
+
+	switch {
+	case bytes.HasPrefix(head, sqliteMagic):
+		return kindDatabase
+	case bytes.HasPrefix(head, zipMagic):
+		return kindZip
+	case bytes.HasPrefix(head, gzipMagic):
+		return kindTarGz
+	case len(head) >= 262 && bytes.Equal(head[257:262], tarMagic):
+		return kindTar
+	}
+	return kindUnknown
+}
+
+// errSkipEntry marks an archive entry that is not part of a project rather
+// than one that is dangerous.
+var errSkipEntry = errors.New("skip entry")
+
+// entryPath resolves an archive entry name to a path inside dir. Entry names
+// come from the uploaded file, so an absolute path or one climbing out with
+// ".." is refused outright rather than quietly rewritten.
+func entryPath(dir, name string) (string, error) {
+	clean := path.Clean(strings.ReplaceAll(name, `\`, "/"))
+	if clean == "." || clean == "/" {
+		return "", errSkipEntry
+	}
+	if path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("archive entry %q would be written outside the project directory", name)
+	}
+	full := filepath.Join(dir, filepath.FromSlash(clean))
+	if !strings.HasPrefix(full, dir+string(os.PathSeparator)) {
+		return "", fmt.Errorf("archive entry %q would be written outside the project directory", name)
+	}
+	return full, nil
+}
+
+// writeEntry writes one archive entry, refusing to write more than budget
+// bytes so that a small archive cannot expand into a full /data.
+func writeEntry(dest string, r io.Reader, budget int64) (int64, error) {
+	if budget <= 0 {
+		return 0, fmt.Errorf("the archive expands to more than %d MB", maxUnpackedBytes>>20)
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return 0, err
+	}
+	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	n, err := io.Copy(f, io.LimitReader(r, budget+1))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return n, err
+	}
+	if n > budget {
+		return n, fmt.Errorf("the archive expands to more than %d MB", maxUnpackedBytes>>20)
+	}
+	return n, nil
+}
+
+func unpackZip(f io.ReaderAt, size int64, dir string) error {
+	zr, err := zip.NewReader(f, size)
+	if err != nil {
+		return fmt.Errorf("not a readable zip archive: %w", err)
+	}
+	if len(zr.File) > maxArchiveEntries {
+		return fmt.Errorf("the archive holds %d entries, more than the %d allowed", len(zr.File), maxArchiveEntries)
+	}
+
+	var total int64
+	for _, e := range zr.File {
+		if !e.Mode().IsRegular() {
+			continue // directories, symlinks and the like are not project files
+		}
+		dest, err := entryPath(dir, e.Name)
+		if errors.Is(err, errSkipEntry) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		rc, err := e.Open()
+		if err != nil {
+			return err
+		}
+		n, err := writeEntry(dest, rc, maxUnpackedBytes-total)
+		rc.Close()
+		if err != nil {
+			return err
+		}
+		total += n
+	}
+	if total == 0 {
+		return errors.New("the archive holds no files")
+	}
+	return nil
+}
+
+func unpackTar(r io.Reader, dir string) error {
+	tr := tar.NewReader(r)
+
+	var total int64
+	entries := 0
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("not a readable tar archive: %w", err)
+		}
+		if entries++; entries > maxArchiveEntries {
+			return fmt.Errorf("the archive holds more than the %d entries allowed", maxArchiveEntries)
+		}
+		if h.Typeflag != tar.TypeReg {
+			continue // directories, symlinks, devices
+		}
+		dest, err := entryPath(dir, h.Name)
+		if errors.Is(err, errSkipEntry) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		n, err := writeEntry(dest, tr, maxUnpackedBytes-total)
+		if err != nil {
+			return err
+		}
+		total += n
+	}
+	if total == 0 {
+		return errors.New("the archive holds no files")
+	}
+	return nil
+}
+
+// projectInArchive works out which project an unpacked archive holds from the
+// database inside it. A Toolkit backup is named for the day it was taken, so
+// the archive's own file name is no guide.
+func projectInArchive(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if name, ok := strings.CutSuffix(e.Name(), dbSuffix); ok {
+			names = append(names, name)
+		}
+	}
+
+	switch len(names) {
+	case 0:
+		return "", errors.New("the archive holds no .db file, so it is not a C-Gate project")
+	case 1:
+		return names[0], nil
+	default:
+		sort.Strings(names)
+		return "", fmt.Errorf("the archive holds %d databases (%s), so it is not one project",
+			len(names), strings.Join(names, ", "))
+	}
+}
+
 func handleTagUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, http.StatusMethodNotAllowed, "upload requires POST")
@@ -481,7 +789,29 @@ func handleTagUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	project := strings.TrimSpace(r.FormValue("project"))
+	requested := strings.TrimSpace(r.FormValue("project"))
+
+	switch kind := sniff(file); kind {
+	case kindDatabase:
+		uploadDatabase(w, file, header, requested)
+	case kindZip, kindTar, kindTarGz:
+		uploadArchive(w, file, header, requested, kind)
+	default:
+		writeJSONError(w, http.StatusBadRequest,
+			"that is not a C-Gate project: expected a .db database, or a .cbz, .zip, .tar or .tar.gz archive of a project directory")
+	}
+}
+
+// uploadDatabase replaces just the database file, leaving anything else in the
+// project directory as it was.
+//
+// The file is written to a temporary file in the destination directory first,
+// so a failed upload never touches the database in place. C-Gate holds an open
+// project in memory and writes it back to disk, so it is told to stop and
+// close the project before the swap, and to load and start it again
+// afterwards. The previous database is kept alongside as <project>.db.bak.
+func uploadDatabase(w http.ResponseWriter, file multipart.File, header *multipart.FileHeader, requested string) {
+	project := requested
 	if project == "" {
 		project = strings.TrimSuffix(filepath.Base(header.Filename), dbSuffix)
 	}
@@ -491,12 +821,6 @@ func handleTagUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	magic := make([]byte, len(sqliteMagic))
-	if _, err := io.ReadFull(file, magic); err != nil || !bytes.Equal(magic, sqliteMagic) {
-		writeJSONError(w, http.StatusBadRequest,
-			"that is not a C-Gate project database (expected a SQLite .db file)")
-		return
-	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -526,8 +850,7 @@ func handleTagUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	notes := cgateTry("project stop " + project)
-	notes = append(notes, cgateTry("project close "+project)...)
+	notes := closeInCGate(project)
 
 	backedUp := false
 	if _, err := os.Stat(dest); err == nil {
@@ -549,18 +872,153 @@ func handleTagUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("Tag database upload: %s (%d bytes, backup=%v)", dest, size, backedUp)
 
-	notes = append(notes, cgateTry("project load "+project)...)
-	notes = append(notes, cgateTry("project start "+project)...)
+	notes = append(notes, openInCGate(project)...)
 	announce(append([]string{fmt.Sprintf("uploaded %s (%d bytes)", dest, size)}, notes...))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"project":  project,
 		"path":     dest,
 		"size":     size,
+		"files":    1,
 		"backup":   backedUp,
 		"cgate":    notes,
 		"projects": listProjects(),
 	})
+}
+
+// uploadArchive replaces a project's whole directory with the contents of an
+// uploaded archive — Toolkit's .cbz backup, or any zip or tar of a project
+// directory. The archive is unpacked into a staging directory beside the
+// project first, so nothing in place is touched until a complete, plausible
+// project has landed on disk. The previous directory is kept as <project>.bak.
+func uploadArchive(w http.ResponseWriter, file multipart.File, header *multipart.FileHeader, requested string, kind uploadKind) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if err := os.MkdirAll(tagDir, 0o755); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "could not create the tag directory: "+err.Error())
+		return
+	}
+	staging, err := os.MkdirTemp(tagDir, ".incoming-*")
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "could not create a staging directory: "+err.Error())
+		return
+	}
+	// A no-op once the staging directory has been renamed into place.
+	defer os.RemoveAll(staging)
+
+	switch kind {
+	case kindZip:
+		err = unpackZip(file, header.Size, staging)
+	case kindTar:
+		err = unpackTar(file, staging)
+	case kindTarGz:
+		var gz *gzip.Reader
+		if gz, err = gzip.NewReader(file); err == nil {
+			err = unpackTar(gz, staging)
+			gz.Close()
+		}
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	found, err := projectInArchive(staging)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	project := found
+	switch {
+	case found != genericDBName && requested != "" && requested != found:
+		writeJSONError(w, http.StatusBadRequest,
+			fmt.Sprintf("the archive holds %s%s, not %s%s", found, dbSuffix, requested, dbSuffix))
+		return
+	case found == genericDBName && requested == "":
+		// C-Gate's own PROJECT ARCHIVE zip: the database inside is generic, so
+		// only the person uploading knows which project it is.
+		writeJSONError(w, http.StatusBadRequest,
+			"this archive holds C-Gate's generic tagdb.db — give the project name to install it as")
+		return
+	case found == genericDBName:
+		project = requested
+	}
+	if !projectNamePattern.MatchString(project) {
+		writeJSONError(w, http.StatusBadRequest,
+			fmt.Sprintf("invalid project name %q — letters, digits, - and _ only", project))
+		return
+	}
+	if project != found {
+		if err := os.Rename(filepath.Join(staging, found+dbSuffix), filepath.Join(staging, project+dbSuffix)); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "could not name the database: "+err.Error())
+			return
+		}
+	}
+
+	size, files := projectContents(staging)
+	notes := closeInCGate(project)
+
+	dest := filepath.Join(tagDir, project)
+	backup := dest + backupSuffix
+	backedUp := false
+	if _, err := os.Stat(dest); err == nil {
+		// Only the most recent backup is kept.
+		if err := os.RemoveAll(backup); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "could not clear the previous backup: "+err.Error())
+			return
+		}
+		if err := os.Rename(dest, backup); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "could not back up the existing project: "+err.Error())
+			return
+		}
+		backedUp = true
+	}
+
+	if err := os.Rename(staging, dest); err != nil {
+		if backedUp {
+			os.Rename(backup, dest)
+		}
+		writeJSONError(w, http.StatusInternalServerError, "could not install the uploaded project: "+err.Error())
+		return
+	}
+
+	// A flat <project>.db from an older add-on version would sit alongside the
+	// directory that now supersedes it, so it is moved aside too.
+	flat := filepath.Join(tagDir, project+dbSuffix)
+	if _, err := os.Stat(flat); err == nil {
+		os.Rename(flat, flat+backupSuffix)
+	}
+	log.Printf("Tag project upload: %s (%d files, %d bytes, backup=%v)", dest, files, size, backedUp)
+
+	notes = append(notes, openInCGate(project)...)
+	announce(append([]string{fmt.Sprintf("uploaded %s (%d files, %d bytes)", dest, files, size)}, notes...))
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"project":  project,
+		"path":     dest,
+		"size":     size,
+		"files":    files,
+		"backup":   backedUp,
+		"cgate":    notes,
+		"projects": listProjects(),
+	})
+}
+
+// closeInCGate makes C-Gate let go of a project before its files are replaced;
+// openInCGate puts it back afterwards. C-Gate holds a loaded project in memory
+// and writes it back to disk, so a swap underneath it would be lost.
+func closeInCGate(project string) []string {
+	notes := cgateTry("project stop " + project)
+	return append(notes, cgateTry("project close "+project)...)
+}
+
+func openInCGate(project string) []string {
+	notes := cgateTry("project load " + project)
+	return append(notes, cgateTry("project start "+project)...)
 }
 
 func handleWS(ws *websocket.Conn) {
@@ -629,6 +1087,8 @@ func route(wsHandler http.Handler) http.HandlerFunc {
 			handleTagList(w, r)
 		case "/tag/download":
 			handleTagDownload(w, r)
+		case "/tag/archive":
+			handleTagArchive(w, r)
 		case "/tag/upload":
 			handleTagUpload(w, r)
 		case "/ws":

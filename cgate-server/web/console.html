@@ -40,6 +40,7 @@
   #db-list th { text-align: left; color: #888; font-weight: normal; font-size: 11px; padding: 2px 10px 4px 0; border-bottom: 1px solid #3a3a3a; }
   #db-list td { padding: 4px 10px 4px 0; border-bottom: 1px solid #333; }
   #db-list .active-tag { color: #6a9955; font-size: 11px; }
+  #db-list .actions { display: flex; gap: 6px; justify-content: flex-end; }
   #db-upload { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 8px; border-top: 1px solid #3a3a3a; }
   #db-upload label { font-size: 11px; color: #888; }
   #db-upload input[type=text] { background: #1e1e1e; color: #d4d4d4; border: 1px solid #444; padding: 4px 8px; font-family: inherit; font-size: 12px; width: 140px; outline: none; }
@@ -68,15 +69,18 @@
   <h2>Project tag databases</h2>
   <p class="note">
     C-Gate holds a loaded project in memory, so send <code>project save</code> before
-    downloading. Uploading replaces the project database on disk — the previous one is
-    kept as <code>&lt;project&gt;.db.bak</code> — then reloads and starts the project.
+    downloading. Upload a Toolkit <code>.cbz</code> backup, a <code>.zip</code> or
+    <code>.tar</code> of a project directory, or a bare <code>.db</code>; an archive
+    replaces the whole directory, bitmaps and all, and the project name comes from the
+    database inside it. The previous copy is kept as <code>&lt;project&gt;.bak</code>,
+    and the project is stopped and reloaded around the swap.
   </p>
   <table id="db-list">
-    <thead><tr><th>Project</th><th>Size</th><th>Modified</th><th></th></tr></thead>
+    <thead><tr><th>Project</th><th>Files</th><th>Size</th><th>Modified</th><th>Download</th></tr></thead>
     <tbody></tbody>
   </table>
   <div id="db-upload">
-    <input id="db-file" type="file" accept=".db">
+    <input id="db-file" type="file" accept=".db,.cbz,.zip,.tar,.tar.gz,.tgz,.gz">
     <label for="db-project">project</label>
     <input id="db-project" type="text" placeholder="from file name">
     <button id="db-send" class="btn">Upload</button>
@@ -184,13 +188,22 @@
     return (bytes / 1024 / 1024).toFixed(1) + ' MB';
   }
 
-  function download(name) {
+  function download(name, whole) {
     var a = document.createElement('a');
-    a.href = base + '/tag/download?project=' + encodeURIComponent(name);
-    a.download = name + '.db';
+    a.href = base + (whole ? '/tag/archive?project=' : '/tag/download?project=') + encodeURIComponent(name);
+    a.download = name + (whole ? '.zip' : '.db');
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+  }
+
+  function downloadButton(label, title, name, whole) {
+    var btn = document.createElement('button');
+    btn.className = 'btn';
+    btn.textContent = label;
+    btn.title = title;
+    btn.addEventListener('click', function() { download(name, whole); });
+    return btn;
   }
 
   function renderProjects(projects) {
@@ -198,7 +211,7 @@
     if (!projects || !projects.length) {
       var empty = document.createElement('tr');
       var cell = document.createElement('td');
-      cell.colSpan = 4;
+      cell.colSpan = 5;
       cell.textContent = 'No project databases found.';
       empty.appendChild(cell);
       dbBody.appendChild(empty);
@@ -217,6 +230,10 @@
       }
       tr.appendChild(name);
 
+      var files = document.createElement('td');
+      files.textContent = p.files > 1 ? p.files : '';
+      tr.appendChild(files);
+
       var size = document.createElement('td');
       size.textContent = fmtSize(p.size);
       tr.appendChild(size);
@@ -226,11 +243,11 @@
       tr.appendChild(mod);
 
       var action = document.createElement('td');
-      var btn = document.createElement('button');
-      btn.className = 'btn';
-      btn.textContent = 'Download';
-      btn.addEventListener('click', function() { download(p.name); });
-      action.appendChild(btn);
+      action.className = 'actions';
+      action.appendChild(downloadButton('.db', 'The project database on its own', p.name, false));
+      if (p.files > 1) {
+        action.appendChild(downloadButton('.zip', 'The whole project directory, bitmaps and all', p.name, true));
+      }
       tr.appendChild(action);
 
       dbBody.appendChild(tr);
@@ -267,8 +284,9 @@
       .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
       .then(function(res) {
         if (!res.ok) { setStatus(res.data.error || 'Upload failed.', 'err'); return; }
-        setStatus('Uploaded ' + res.data.project + ' (' + fmtSize(res.data.size) + ')' +
-                  (res.data.backup ? ', previous database kept as .db.bak' : '') +
+        setStatus('Uploaded ' + res.data.project + ' \u2014 ' +
+                  (res.data.files > 1 ? res.data.files + ' files, ' : '') + fmtSize(res.data.size) +
+                  (res.data.backup ? ', previous copy kept as .bak' : '') +
                   '. See the log for C-Gate\u2019s response.', 'ok');
         dbFile.value = '';
         renderProjects(res.data.projects);
