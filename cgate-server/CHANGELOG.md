@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.1.9
+
+- **Fixed projects becoming unfindable after the 1.1.8 upgrade.** C-Gate locates
+  projects through its `project.default.dir` property, which persists in
+  `/data/config/C-GateConfig.txt`. An installation whose C-Gate had been pointed
+  at the tag directory kept looking there after 1.1.8 moved the databases,
+  reporting `Unable to read path '/data/tag/<project>/<project>.db': file does
+  not exist` and leaving the project unloadable.
+- The add-on now sets `project.default.dir` explicitly on every start, so the
+  location is the one it manages rather than whatever a previous version or a
+  C-Bus Toolkit session left in the config file. This corrects 1.1.8's note that
+  C-Gate never looks in the tag directory: it looks wherever that property
+  says, which is exactly why it had to be set rather than assumed.
+- The configured project is now loaded and started when C-Gate comes up, by
+  setting `project.start`. A startup project that has already been set is left
+  alone.
+- Default configuration files are installed individually. They were only ever
+  copied when the whole `/data/config` directory was missing, so a config
+  directory that had lost a single file made the add-on exit during startup.
+
 ## 1.1.8
 
 - **Fixed project databases never being visible to C-Gate, or persisted.** The

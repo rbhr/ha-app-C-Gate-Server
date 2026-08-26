@@ -16,11 +16,17 @@ echo "  Log level: ${LOG_LEVEL}"
 
 # --- Initialise persistent storage on first run ---
 
-if [ ! -d /data/config ]; then
-    echo "First run: initialising /data/config with defaults"
-    mkdir -p /data/config
-    cp /cgate/defaults/* /data/config/
-fi
+# Install any default that is not there. An earlier version copied these only
+# when the whole directory was missing, so a config directory that had lost a
+# single file left the add-on dying on the next start.
+mkdir -p /data/config
+for DEFAULT in /cgate/defaults/*; do
+    TARGET="/data/config/$(basename "$DEFAULT")"
+    if [ ! -f "$TARGET" ]; then
+        echo "Installing default $(basename "$DEFAULT")"
+        cp "$DEFAULT" "$TARGET"
+    fi
+done
 
 if [ ! -d /data/tag ]; then
     echo "First run: initialising /data/tag with defaults"
@@ -90,6 +96,44 @@ done
 
 # Update log level in logback.xml
 sed -i "s/level=\"[A-Z]*\"/level=\"${LOG_LEVEL}\"/" /data/config/logback.xml
+
+# --- Point C-Gate at the project directory ---
+#
+# C-Gate finds projects under its project.default.dir property, which lives in
+# C-GateConfig.txt and therefore persists in /data/config across updates. Its
+# default is "Projects/", relative to C-Gate's own directory inside the
+# container, but an installation may have been pointed somewhere else long ago
+# and would then keep looking there. Set it explicitly on every start so the
+# location is whatever this add-on manages, not whatever a previous version or
+# a C-Bus Toolkit session left behind.
+#
+# C-Gate reads a partial config file and defaults everything it does not
+# mention, so writing the file before C-Gate has ever run is safe.
+
+CGATE_CONFIG=/data/config/C-GateConfig.txt
+
+# set_cgate_property KEY VALUE — replace the property in place, or append it.
+set_cgate_property() {
+    if [ -f "$CGATE_CONFIG" ] && grep -q "^$1=" "$CGATE_CONFIG"; then
+        # '|' as the delimiter: it cannot appear in the paths set here
+        sed -i "s|^$1=.*|$1=$2|" "$CGATE_CONFIG"
+    else
+        printf '%s=%s\n' "$1" "$2" >> "$CGATE_CONFIG"
+    fi
+}
+
+set_cgate_property project.default.dir "/data/projects/"
+set_cgate_property project.default.archive-dir "/data/projects/archived/"
+echo "  Projects:  $(awk -F= '/^project.default.dir=/{print $2; exit}' "$CGATE_CONFIG")"
+
+# Load and start the configured project at boot, but never override a startup
+# project that has been set deliberately.
+if ! grep -q "^project.start=." "$CGATE_CONFIG" 2>/dev/null; then
+    set_cgate_property project.start "${PROJECT_NAME}"
+    echo "  Autostart: ${PROJECT_NAME}"
+else
+    echo "  Autostart: $(awk -F= '/^project.start=/{print $2; exit}' "$CGATE_CONFIG") (from C-GateConfig.txt)"
+fi
 
 # --- Access control ---
 #
