@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.5
+
+- Fixed Home Assistant being refused by C-Gate on a clean install. C-Gate's
+  `interface` rules match the local address a connection arrives on, not the
+  client, so the `interface 0.0.0.0` and `interface 172.30.32.2` rules the
+  add-on shipped and appended never matched anything — only loopback had
+  access, which is why the built-in web console worked but nothing else did.
+  Clients are now allowed with `remote` rules.
+- The add-on detects the address Home Assistant Core connects from on every
+  start (Supervisor DNS, falling back to the container's default gateway) and
+  grants it access, along with the Home Assistant host's own network addresses
+  (read from the Supervisor API, which the add-on now requests), the Supervisor
+  itself and the other add-ons on the Supervisor network.
+- New **Allowed IP addresses** option for granting access to anything else,
+  such as a PC running C-Bus Toolkit. Entries accept a `255` wildcard octet and
+  an optional C-Gate access level.
+- Managed rules are written to `/data/config/access.txt` between markers and
+  rewritten on every start; rules added outside the block are preserved, and
+  the stale rules from earlier versions are cleaned out on upgrade. The add-on
+  log now prints the full rule list at startup.
+
 ## 1.1.4
 
 - Fixed the ingress panel showing the Home Assistant dashboard instead of the

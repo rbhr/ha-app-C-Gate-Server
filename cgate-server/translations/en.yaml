@@ -9,6 +9,14 @@ configuration:
     description: >-
       IP address of a remote C-Bus interface (CNI, wireless gateway, etc.).
       Leave empty for local or serial connections.
+  access_ips:
+    name: Allowed IP Addresses
+    description: >-
+      Extra addresses allowed to connect to C-Gate, one per line. Home
+      Assistant itself is always allowed. Use 255 in any part of an address as
+      a wildcard (192.168.1.255 allows the whole subnet). Add a C-Gate access
+      level after the address to grant less than full access, e.g.
+      "192.168.1.50 monitor".
   log_level:
     name: Log Level
     description: C-Gate logging verbosity level.
