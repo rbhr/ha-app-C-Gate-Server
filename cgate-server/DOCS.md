@@ -99,6 +99,39 @@ The console provides:
 - Real-time streaming of C-Bus events and status changes
 - Command entry for sending C-Gate commands
 - Filterable log streams (events, status, commands, responses)
+- Download and upload of project tag databases
+
+### Project tag databases
+
+**Tag database** in the console header opens a panel listing every project
+database in `/data/tag`, with its size and the time it was last written.
+
+**Download** saves `<project>.db` — the whole project database — through the
+browser. C-Gate holds a loaded project in memory and only writes it to disk
+when told to, so send `project save` in the console first if the project has
+been changed since it was loaded; otherwise the download is the last saved
+copy.
+
+**Upload** replaces a project database with one from your PC, which is how a
+project built in C-Bus Toolkit gets into the add-on. Choose the `.db` file, and
+optionally the project name to install it as — by default the file name is
+used, so `HOME.db` becomes the `HOME` project. Uploading:
+
+1. checks the file is a C-Gate project database and writes it out in full
+   before anything on disk is touched,
+2. tells C-Gate to `project stop` and `project close` the project, so it is not
+   holding the old database in memory,
+3. renames the existing database to `<project>.db.bak` and installs the new
+   one,
+4. tells C-Gate to `project load` and `project start` the project again.
+
+C-Gate's replies to those commands appear in the console log. Uploading a
+project that is not the one in **Project Name** installs it but leaves the
+configured project running.
+
+To go back to the previous database, remove the `.db.bak` suffix from the
+backup file, or download the current one before uploading again — only the most
+recent backup is kept.
 
 ## Ports
 
@@ -124,7 +157,10 @@ add-on updates and restarts. On first run, default configuration files are
 copied automatically.
 
 - `/data/config/` — access.txt, C-groups.txt, logback.xml
-- `/data/tag/` — C-Gate project databases
+- `/data/tag/` — C-Gate project databases, as `<project>/<project>.db`
+
+Project databases can be backed up and replaced from the web console — see
+**Project tag databases** above.
 
 ## Troubleshooting
 
