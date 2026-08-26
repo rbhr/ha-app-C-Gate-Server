@@ -95,6 +95,28 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $token" \
 - Access control (`config/access.txt`) matches connecting clients with
   `remote`, not `interface`. `interface` matches the local address a connection
   arrived on and never matches a client.
-- Ingress reaches the add-on as `//`. `http.ServeMux` answers 301 to the
-  cleaned path, which sends the panel iframe to the Home Assistant dashboard —
-  hence the hand-rolled routing in `main.go`. Do not reintroduce a mux.
+- Ingress reaches the add-on as `//`, but **not because ingress does that** —
+  because `cgate-server/config.yaml` sets `ingress_entry: /`. Supervisor builds
+  the panel URL as
+
+  ```python
+  url = f"/api/hassio_ingress/{self.ingress_token}/"   # already ends in a slash
+  if ATTR_INGRESS_ENTRY in self.data:
+      return f"{url}{self.data[ATTR_INGRESS_ENTRY]}"   # appended RELATIVE
+  ```
+
+  so `ingress_entry: /` yields `.../<token>//`. Without the key the add-on is
+  asked for `/`. The key is meant for add-ons whose entry point is a file, e.g.
+  deconz's `ingress_entry: ingress.html` (note: no leading slash).
+
+  This matters because the note used to describe the doubled slash as a
+  property of ingress, and that cost real time elsewhere:
+  `ha-app-OpenSprinkler-Server` copied `ingress_entry: /` from here for parity
+  and shipped a broken panel, its firmware having no equivalent of
+  `normalizePath`.
+
+  Nothing is broken here — `normalizePath` (`main.go:1051`) collapses `//` to
+  `/` and handles both — so this is optional cleanup, not a fix. If the key is
+  ever dropped, `normalizePath` must stay: it also strips the ingress prefix,
+  and `http.ServeMux` would still answer 301 to a cleaned path and send the
+  panel iframe to the Home Assistant dashboard. **Do not reintroduce a mux.**
