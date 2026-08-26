@@ -1,7 +1,12 @@
 ##C-Gate Server Access Control File
-## Modified for containerised deployment - allows programming from any IP
+## Local access, used by the C-Gate console and the add-on's web bridge.
 interface 0:0:0:0:0:0:0:1 Program
 interface 127.0.0.1 Program
 interface localhost Program
-interface 0.0.0.0 Program
+remote 127.0.0.1 Program
+##
+## Home Assistant's own addresses, and any extra addresses set in the add-on's
+## "Allowed IP addresses" option, are written to the managed block that the
+## add-on appends to this file on every start. Rules added outside that block
+## are kept.
 ## End of access control file
