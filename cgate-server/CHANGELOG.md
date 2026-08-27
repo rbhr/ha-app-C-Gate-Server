@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.10
+
+- **Fixed the event and status streams reconnecting every five minutes.** The
+  bridge armed a five-minute read deadline before every read on C-Gate's event
+  (20024) and status (20025) interfaces, on the assumption that silence meant a
+  dead connection. It does not: both ends are inside this container, so a
+  C-Gate that exits returns EOF immediately and the existing reconnect handles
+  it. The deadline could therefore only ever fire on a healthy but quiet port —
+  and both are legitimately quiet, since the event interface emits nothing at
+  the default global-event-level and the status interface goes silent on an
+  idle site. The result was a reconnect every 5m02s, forever.
+- On the event stream that was log noise. On the status stream it also lost
+  data: status changes arriving during the two-second reconnect gap were
+  dropped, and that interface has no backfill. Busy sites never saw it, because
+  traffic kept the deadline from firing. TCP keepalive remains as the backstop
+  for a connection genuinely going away.
+- Stream lines longer than 64KB no longer break the connection. The line
+  scanner used its default limit and failed with `ErrTooLong`, which with the
+  reconnect loop underneath it would have spun fast rather than slow; the limit
+  is now 1MB.
+
 ## 1.1.9
 
 - **Fixed projects becoming unfindable after the 1.1.8 upgrade.** C-Gate locates

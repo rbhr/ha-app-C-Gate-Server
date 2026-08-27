@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,6 +18,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/net/websocket"
 )
 
 func TestNormalizePath(t *testing.T) {
@@ -741,5 +745,177 @@ func TestTagArchiveDownloadOfUnknownProject(t *testing.T) {
 	route(http.NotFoundHandler())(rec, httptest.NewRequest(http.MethodGet, "http://addon:8980/tag/archive?project=NOPE", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("archive of an unknown project = %d, want 404", rec.Code)
+	}
+}
+
+// fakeCGatePort stands in for a C-Gate stream interface. It accepts one
+// connection, hands it to serve, and records how many connections it saw so a
+// test can tell a torn-down-and-reconnected stream from a stable one.
+type fakeCGatePort struct {
+	ln     net.Listener
+	port   string
+	accept chan net.Conn
+}
+
+func newFakeCGatePort(t *testing.T) *fakeCGatePort {
+	t.Helper()
+	// streamPort dials cgateHost, so bind the same name rather than 127.0.0.1
+	// — on a dual-stack box they are not necessarily the same address.
+	ln, err := net.Listen("tcp", net.JoinHostPort(cgateHost, "0"))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+	f := &fakeCGatePort{ln: ln, port: port, accept: make(chan net.Conn, 8)}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			f.accept <- conn
+		}
+	}()
+	t.Cleanup(func() { ln.Close() })
+	return f
+}
+
+// wsClient subscribes to the hub the way the console does, so a test can read
+// what streamPort actually broadcast.
+func wsClient(t *testing.T) chan map[string]string {
+	t.Helper()
+	srv := httptest.NewServer(websocket.Handler(handleWS))
+	t.Cleanup(srv.Close)
+
+	origin := srv.URL
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+	ws, err := websocket.Dial(wsURL, "", origin)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	t.Cleanup(func() { ws.Close() })
+
+	msgs := make(chan map[string]string, 16)
+	go func() {
+		defer close(msgs)
+		for {
+			// Message.Receive, not ws.Read — Read returns whatever of the
+			// frame has arrived, which truncates a large broadcast.
+			var raw string
+			if err := websocket.Message.Receive(ws, &raw); err != nil {
+				return
+			}
+			var m map[string]string
+			if err := json.Unmarshal([]byte(raw), &m); err != nil {
+				return
+			}
+			msgs <- m
+		}
+	}()
+
+	// hub.add happens on the server side; give it a moment to register before
+	// the caller starts broadcasting, or the first line goes nowhere.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		hub.mu.RLock()
+		n := len(hub.clients)
+		hub.mu.RUnlock()
+		if n > 0 {
+			return msgs
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("ws client never registered with the hub")
+	return nil
+}
+
+// TestQuietStreamIsNotTornDown covers the regression that a read deadline on
+// these connections caused: both C-Gate stream interfaces are legitimately
+// quiet (no events at the default global-event-level, no status changes on an
+// idle site), and arming a deadline before each read reconnected them on a
+// fixed cycle forever, dropping whatever arrived during the gap.
+//
+// Be clear about what this does and does not catch: it will not fail against
+// the five-minute deadline it was written for, because waiting that out is not
+// a test anyone will run. It pins the invariant — an idle stream is the same
+// connection afterwards, and a line sent after the gap still arrives — and it
+// fails on any deadline short enough to fire inside the idle window.
+func TestQuietStreamIsNotTornDown(t *testing.T) {
+	fake := newFakeCGatePort(t)
+	msgs := wsClient(t)
+
+	go streamPort(fake.port, "event")
+
+	conn := <-fake.accept
+	defer conn.Close()
+
+	// Idle. A deadline short enough to be testable would fire here; the point
+	// is that nothing does.
+	time.Sleep(300 * time.Millisecond)
+
+	select {
+	case c := <-fake.accept:
+		c.Close()
+		t.Fatal("stream reconnected while idle — the read deadline is back")
+	default:
+	}
+
+	if _, err := conn.Write([]byte("evt 702 //PROJECT/254/56/1\n")); err != nil {
+		t.Fatalf("write after idle: %v", err)
+	}
+
+	select {
+	case m, ok := <-msgs:
+		if !ok {
+			t.Fatal("ws client stopped before the line arrived")
+		}
+		if m["stream"] != "event" {
+			t.Errorf("stream = %q, want %q", m["stream"], "event")
+		}
+		if m["data"] != "evt 702 //PROJECT/254/56/1" {
+			t.Errorf("data = %q", m["data"])
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("line sent after an idle gap never arrived")
+	}
+}
+
+// TestStreamHandlesLongLine covers the scanner buffer raise. bufio.Scanner
+// caps a token at 64KB by default and then fails with ErrTooLong, which with
+// the reconnect loop underneath it would spin fast rather than slow.
+func TestStreamHandlesLongLine(t *testing.T) {
+	fake := newFakeCGatePort(t)
+	msgs := wsClient(t)
+
+	go streamPort(fake.port, "status")
+
+	conn := <-fake.accept
+	defer conn.Close()
+
+	long := strings.Repeat("x", 200*1024)
+	if _, err := conn.Write([]byte(long + "\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case m, ok := <-msgs:
+		if !ok {
+			t.Fatal("ws client stopped before the line arrived")
+		}
+		if len(m["data"]) != len(long) {
+			t.Errorf("data length = %d, want %d", len(m["data"]), len(long))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a 200KB line was dropped — scanner buffer too small")
+	}
+
+	select {
+	case c := <-fake.accept:
+		c.Close()
+		t.Fatal("stream reconnected after a long line — ErrTooLong")
+	case <-time.After(200 * time.Millisecond):
 	}
 }

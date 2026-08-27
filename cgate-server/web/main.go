@@ -46,10 +46,6 @@ const (
 	// TCP keepalive interval for long-lived connections
 	keepAliveInterval = 30 * time.Second
 
-	// Read deadline for stream connections — if nothing arrives within
-	// this window we assume the connection is dead and reconnect.
-	streamReadDeadline = 5 * time.Minute
-
 	// Per-line read deadline for an interactive command.
 	commandReadDeadline = 5 * time.Second
 
@@ -117,31 +113,36 @@ func dialTCP(port string) net.Conn {
 }
 
 // streamPort reads lines from a C-Gate port and broadcasts them.
-// Reconnects automatically on any error or timeout.
+// Reconnects automatically when the connection drops.
+//
+// There is deliberately no read deadline on these connections. Both ends live
+// in the same container (cgateHost is localhost), so "peer died without
+// closing the socket" is not a failure mode reachable here — if C-Gate exits,
+// the read returns EOF/RST straight away and the reconnect below handles it.
+// A deadline could therefore only ever fire on a healthy but quiet port, and
+// both ports are legitimately quiet: the event interface emits nothing at the
+// default global-event-level, and the status interface goes silent on an idle
+// site. Tearing the connection down in that case cost a reconnect every
+// deadline period and dropped any line arriving during it. TCP keepalive (see
+// dialTCP) stays as the backstop for the connection genuinely going away.
 func streamPort(port, streamName string) {
 	for {
 		conn := dialTCP(port)
 		scanner := bufio.NewScanner(conn)
-		alive := true
-		for alive {
-			// Set a read deadline so we detect dead connections even when
-			// C-Gate is quiet (no events/status changes for a while).
-			conn.SetReadDeadline(time.Now().Add(streamReadDeadline))
-			if scanner.Scan() {
-				line := scanner.Text()
-				hub.broadcast(map[string]string{
-					"stream": streamName,
-					"data":   line,
-					"time":   time.Now().Format("15:04:05"),
-				})
-			} else {
-				alive = false
-			}
+		// C-Gate lines are short, but don't let one unusually long line kill
+		// the stream with ErrTooLong and send us into a reconnect loop.
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			hub.broadcast(map[string]string{
+				"stream": streamName,
+				"data":   scanner.Text(),
+				"time":   time.Now().Format("15:04:05"),
+			})
 		}
 		if err := scanner.Err(); err != nil {
-			log.Printf("Stream %s error: %v — reconnecting", streamName, err)
+			log.Printf("Stream %s connection lost: %v — reconnecting", streamName, err)
 		} else {
-			log.Printf("Stream %s disconnected (EOF) — reconnecting", streamName)
+			log.Printf("Stream %s closed by C-Gate (EOF) — reconnecting", streamName)
 		}
 		conn.Close()
 		time.Sleep(2 * time.Second)

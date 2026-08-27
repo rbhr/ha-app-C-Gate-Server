@@ -1,5 +1,5 @@
 name: C-Gate Server
-version: 1.1.9
+version: 1.1.10
 slug: cgate-server
 description: Schneider Electric SpaceLogic C-Gate Server for C-Bus home automation
 url: https://github.com/rbhr/ha-app-C-Gate-Server
