@@ -44,6 +44,29 @@ docker run -d --name cgate-test -v "$PWD/somedata":/data cgate-test   # needs /d
 docker exec cgate-test sh -c 'printf "project dir\nproject list\n" | nc -w 6 127.0.0.1 20023'
 ```
 
+## The bridge's connection model
+
+- **Nothing dials C-Gate with `cmdSession.mu` held for longer than one attempt.**
+  `connect()` makes a single bounded dial and returns an error; `drop()` closes
+  the session and marks it down; `maintain()` is the one goroutine allowed to
+  wait. The earlier version redialled from inside `send()` with the mutex held
+  and no time limit, so every request — the ingress panel's included — queued
+  behind that dial for the whole of a C-Gate restart. If you add a code path
+  that reconnects, reconnect through `maintain()`, not under the lock.
+- `maintain()` polls on `dialRetryInterval`, not on `commandHeartbeat`. Sleeping
+  the heartbeat interval means a session that drops between heartbeats is not
+  rebuilt until the next one, which on an idle console is not rebuilt at all.
+- `/health` is liveness and stays 200 while the bridge is serving; `/ready` is
+  readiness and answers 503 until all three connections are up. Do not make
+  `/health` fail when C-Gate is down — Supervisor uses it to decide whether to
+  restart, and C-Gate takes up to a minute to sync its networks on a cold start.
+- The event and status streams carry **no read deadline**, deliberately. Both
+  are legitimately silent on a quiet site; TCP keepalive is the backstop.
+- `web/main.go` here and `C-Gate-Server-Container/web/main.go` are parallel
+  implementations of the same bridge, not one shared file. Everything above is
+  common to both and worth keeping textually identical so the two stay diffable;
+  the project-database handlers are this repo's alone.
+
 ## Line endings
 
 `cgate-server/DOCS.md` and `cgate-server/web/console.html` are stored with CRLF.
