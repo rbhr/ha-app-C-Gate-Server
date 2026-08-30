@@ -171,6 +171,31 @@ anything that is not a plain file, are refused.
 
 Ports 20123–20126 are the SSL equivalents (disabled by default).
 
+### Health checks
+
+Two endpoints on port 8980 report the state of the bridge's connections to
+C-Gate. Both return the same body:
+
+```json
+{"status":"ok","connections":{"command":true,"event":true,"status":true}}
+```
+
+`status` is `ok` only when all three connections are up, and `degraded`
+otherwise.
+
+- **`/health`** always answers 200 while the add-on is serving, even with
+  C-Gate unreachable. It is what decides whether the add-on gets restarted, and
+  C-Gate takes up to a minute to sync its networks on a cold start, so failing
+  it during that window would turn a normal boot into a restart loop. Read
+  `status` in the body to tell a healthy bridge from one that has lost C-Gate.
+- **`/ready`** answers 503 until the command, event and status connections are
+  all established, then 200. Gate on this rather than `/health` if you need
+  C-Gate itself to be up: it lets a client hold its first poll instead of
+  retrying into `408 Operation failed` while C-Gate is still starting.
+
+Neither tracks C-Gate's *network* state, so a project can still be mid-sync
+when `/ready` first passes.
+
 ## Home Assistant C-Bus Integration
 
 After starting the add-on, configure the C-Bus integration to connect to
@@ -222,6 +247,9 @@ is logged and nothing is deleted from `/data/tag`.
 
 - Check the add-on **Log** tab for C-Gate startup messages.
 - Use the web console to send `version` to verify C-Gate is responding.
+- `curl http://<ha-host>:8980/ready` reports which of the three C-Gate
+  connections the bridge is holding, if port 8980 is enabled under
+  **Network** — see **Health checks** above.
 - Ensure your C-Bus interface IP is correct and reachable from the HA host.
 - If C-Gate fails to start, try increasing the log level to `DEBUG` or `TRACE`.
 - `Access control refused` in the log means the connecting address is not in
