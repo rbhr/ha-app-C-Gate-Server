@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.1.11
+
+- **A C-Gate outage no longer hangs the web console.** The command session
+  redialled C-Gate from inside `send()`, with its mutex held and no limit on
+  how long it would keep trying. C-Gate is routinely away for minutes — a
+  restart, a project reload, a reboot — and for that whole time every request
+  queued behind that dial, including the ingress panel's own. Dialling is now
+  one bounded attempt: a request made during an outage is answered with an
+  error straight away, and a background goroutine does the waiting.
+- **That goroutine also brings the session back on its own.** Recovery
+  previously depended on somebody making a request; an idle console stayed
+  disconnected indefinitely. It now reconnects within a few seconds of C-Gate
+  returning, whether or not anyone is looking.
+- **`/health` reports what is actually connected.** It answered a fixed
+  `{"status":"ok"}` that never consulted C-Gate, so Home Assistant was told the
+  add-on was fine while the command session was dead. It now carries the state
+  of all three connections, and still returns 200 whenever the bridge is
+  serving — it is what decides whether to restart, and failing it during
+  C-Gate's minute-long cold start would turn a normal boot into a restart loop.
+- **Added `/ready`**, which returns 503 until the command, event and status
+  connections are all established. Gate on this, not `/health`, if you need
+  C-Gate itself to be up. Neither tracks C-Gate's network state, so a project
+  can still be mid-sync when `/ready` first passes.
+- Restored the command-port heartbeat, dropped when this bridge diverged from
+  its sibling in `C-Gate-Server-Container`: a periodic `noop` now detects a
+  silently dropped session before a real command runs into it.
+
 ## 1.1.10
 
 - **Fixed the event and status streams reconnecting every five minutes.** The

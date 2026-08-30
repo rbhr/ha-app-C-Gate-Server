@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,8 +95,20 @@ func TestRouteDispatch(t *testing.T) {
 	t.Run("health", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		handler(rec, httptest.NewRequest(http.MethodGet, "http://addon:8980/health", nil))
-		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ok"`) {
+		if rec.Code != http.StatusOK {
 			t.Errorf("health = %d %q", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"connections"`) {
+			t.Errorf("health body carries no connection detail: %q", rec.Body.String())
+		}
+	})
+
+	t.Run("ready", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodGet, "http://addon:8980/ready", nil))
+		// Nothing is connected in a unit test, so this must not claim ready.
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Errorf("ready with no connections = %d, want 503", rec.Code)
 		}
 	})
 
@@ -847,7 +860,7 @@ func TestQuietStreamIsNotTornDown(t *testing.T) {
 	fake := newFakeCGatePort(t)
 	msgs := wsClient(t)
 
-	go streamPort(fake.port, "event")
+	go streamPort(fake.port, "event", new(atomic.Bool))
 
 	conn := <-fake.accept
 	defer conn.Close()
@@ -890,7 +903,7 @@ func TestStreamHandlesLongLine(t *testing.T) {
 	fake := newFakeCGatePort(t)
 	msgs := wsClient(t)
 
-	go streamPort(fake.port, "status")
+	go streamPort(fake.port, "status", new(atomic.Bool))
 
 	conn := <-fake.accept
 	defer conn.Close()
@@ -917,5 +930,119 @@ func TestStreamHandlesLongLine(t *testing.T) {
 		c.Close()
 		t.Fatal("stream reconnected after a long line — ErrTooLong")
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestHealthAndReadinessSplit covers what /health and /ready each promise.
+//
+// /health stays 200 while the bridge is serving: Supervisor uses it to decide
+// whether to restart, and C-Gate needs up to a minute to sync its networks on
+// a cold start, so failing it during that window would turn a normal boot into
+// a restart loop. /ready is the probe that reports whether C-Gate is actually
+// reachable, which /health used to answer with a fixed "ok".
+func TestHealthAndReadinessSplit(t *testing.T) {
+	restore := func(e, s, c bool) {
+		eventStreamUp.Store(e)
+		statusStreamUp.Store(s)
+		commandUp.Store(c)
+	}
+	t.Cleanup(func() { restore(false, false, false) })
+
+	type body struct {
+		Status      string          `json:"status"`
+		Connections map[string]bool `json:"connections"`
+	}
+
+	get := func(t *testing.T, h http.HandlerFunc) (int, body) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h(rec, httptest.NewRequest(http.MethodGet, "http://addon:8980/x", nil))
+		var b body
+		if err := json.Unmarshal(rec.Body.Bytes(), &b); err != nil {
+			t.Fatalf("decoding %q: %v", rec.Body.String(), err)
+		}
+		return rec.Code, b
+	}
+
+	t.Run("nothing connected", func(t *testing.T) {
+		restore(false, false, false)
+
+		code, b := get(t, handleHealth)
+		if code != http.StatusOK {
+			t.Errorf("health = %d, want 200 even with C-Gate down", code)
+		}
+		if b.Status != "degraded" {
+			t.Errorf("health status = %q, want degraded", b.Status)
+		}
+
+		code, _ = get(t, handleReady)
+		if code != http.StatusServiceUnavailable {
+			t.Errorf("ready = %d, want 503", code)
+		}
+	})
+
+	t.Run("partially connected", func(t *testing.T) {
+		// The command port is the one an upload and the console both need.
+		restore(true, true, false)
+
+		if code, _ := get(t, handleHealth); code != http.StatusOK {
+			t.Errorf("health = %d, want 200", code)
+		}
+		code, b := get(t, handleReady)
+		if code != http.StatusServiceUnavailable {
+			t.Errorf("ready with the command port down = %d, want 503", code)
+		}
+		if b.Connections["command"] {
+			t.Error("body reports the command port up when it is not")
+		}
+	})
+
+	t.Run("fully connected", func(t *testing.T) {
+		restore(true, true, true)
+
+		code, b := get(t, handleReady)
+		if code != http.StatusOK {
+			t.Errorf("ready = %d, want 200", code)
+		}
+		if b.Status != "ok" {
+			t.Errorf("status = %q, want ok", b.Status)
+		}
+	})
+}
+
+// TestCommandDuringOutageFailsRatherThanHanging is the point of splitting the
+// dial in two. connect() used to retry forever with s.mu held, so every request
+// queued behind it for as long as C-Gate was down.
+func TestCommandDuringOutageFailsRatherThanHanging(t *testing.T) {
+	// Nothing is listening on the command port in a unit test, so the dial
+	// fails the way it would during an outage.
+	s := &commandSession{}
+	commandUp.Store(false)
+	t.Cleanup(func() { commandUp.Store(false) })
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.send("noop")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("send succeeded with no C-Gate listening")
+		}
+	case <-time.After(dialTimeout + 5*time.Second):
+		t.Fatal("send blocked past the dial timeout — it is retrying under the lock again")
+	}
+
+	if commandUp.Load() {
+		t.Error("a failed dial left the session marked up")
+	}
+
+	// The mutex has to be free for the next caller.
+	if !s.mu.TryLock() {
+		t.Error("send left s.mu held")
+	} else {
+		s.mu.Unlock()
 	}
 }
