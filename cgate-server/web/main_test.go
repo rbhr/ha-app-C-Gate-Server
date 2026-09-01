@@ -34,6 +34,9 @@ func TestNormalizePath(t *testing.T) {
 	}{
 		{"root", "/", "/"},
 		{"empty", "", "/"},
+		// "ingress_entry: /" has been dropped from config.yaml, so Supervisor
+		// no longer asks for "//". These stay so that reintroducing the key
+		// cannot break the panel again.
 		{"double slash from ingress_entry", "//", "/"},
 		{"triple slash", "///", "/"},
 		{"cgate", "/cgate", "/cgate"},

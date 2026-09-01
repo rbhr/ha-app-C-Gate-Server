@@ -13,7 +13,6 @@ apparmor: false
 timeout: 60
 ingress: true
 ingress_port: 8980
-ingress_entry: /
 panel_icon: mdi:home-automation
 panel_title: C-Gate Console
 ports:

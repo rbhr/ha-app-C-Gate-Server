@@ -1179,10 +1179,16 @@ func serveConsole(w http.ResponseWriter, r *http.Request) {
 // normalizePath makes routing independent of how Home Assistant's ingress
 // proxy presents the request.
 //
-// Supervisor builds ingress_url by joining the session path with the add-on's
-// ingress_entry, which yields a trailing double slash ("/api/hassio_ingress/
-// <token>//") and reaches us as "//". It also normally strips the session
-// prefix, but that has not been consistent, so strip it here if present.
+// Its live job is the session prefix: Supervisor normally strips
+// "/api/hassio_ingress/<token>" before proxying, but that has not been
+// consistent, so strip it here if present.
+//
+// Collapsing repeated slashes is now a guard rather than a fix. Supervisor
+// joins the session path with the add-on's ingress_entry *relative* to a URL
+// that already ends in a slash, so this add-on's old "ingress_entry: /"
+// produced ".../<token>//" and every request arrived as "//". The key has been
+// dropped, and Supervisor now asks for "/" — but the collapse stays, because
+// reintroducing the key must not break the panel again.
 //
 // This must not be done with http.ServeMux: it cleans the request path and
 // answers 301 to the cleaned path whenever the two differ. Under ingress that
