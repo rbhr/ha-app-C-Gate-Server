@@ -606,6 +606,17 @@ func handleTagDownload(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, name, info.ModTime(), f)
 }
 
+// archiveSuffix picks the extension for a project archive. The bytes are the
+// same either way: a flat zip of the project directory is exactly the shape of
+// the .cbz backup Toolkit writes. The extension is what decides whether
+// Toolkit offers to restore the file, so it is worth being able to ask for.
+func archiveSuffix(r *http.Request) string {
+	if strings.EqualFold(r.URL.Query().Get("format"), "cbz") {
+		return ".cbz"
+	}
+	return ".zip"
+}
+
 // handleTagArchive streams a project's whole directory as a zip — the same
 // shape as the .cbz backup Toolkit writes, so it can go straight back in.
 func handleTagArchive(w http.ResponseWriter, r *http.Request) {
@@ -621,8 +632,9 @@ func handleTagArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	name := project + archiveSuffix(r)
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+project+`.zip"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 
 	zw := zip.NewWriter(w)
 	defer zw.Close()
@@ -632,6 +644,13 @@ func handleTagArchive(w http.ResponseWriter, r *http.Request) {
 	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
+		}
+		// The .bak an upload leaves beside the database is ours, not the
+		// project's. Shipping it would put a second .db in a file Toolkit is
+		// asked to restore, and projectContents already leaves it out of the
+		// file count the console shows.
+		if strings.HasSuffix(d.Name(), backupSuffix) {
+			return nil
 		}
 		info, err := d.Info()
 		if err != nil || !info.Mode().IsRegular() {
@@ -663,7 +682,7 @@ func handleTagArchive(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Tag archive download of %s failed part way: %v", project, err)
 		return
 	}
-	log.Printf("Tag archive download: %s", dir)
+	log.Printf("Tag archive download: %s as %s", dir, name)
 }
 
 // uploadKind is what an uploaded file turned out to be.

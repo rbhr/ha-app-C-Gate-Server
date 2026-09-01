@@ -62,6 +62,7 @@
     <label><input type="checkbox" data-stream="command" checked> commands</label>
     <label><input type="checkbox" data-stream="response" checked> responses</label>
   </div>
+  <button id="backup" class="btn" disabled title="Waiting for the project list">Back up project</button>
   <button id="db-toggle" class="btn">Tag database</button>
 </div>
 
@@ -69,7 +70,8 @@
   <h2>Project tag databases</h2>
   <p class="note">
     C-Gate holds a loaded project in memory, so send <code>project save</code> before
-    downloading. Upload a Toolkit <code>.cbz</code> backup, a <code>.zip</code> or
+    downloading from this table — <b>Back up</b> in the header does that for you.
+    Upload a Toolkit <code>.cbz</code> backup, a <code>.zip</code> or
     <code>.tar</code> of a project directory, or a bare <code>.db</code>; an archive
     replaces the whole directory, bitmaps and all, and the project name comes from the
     database inside it. The previous copy is kept as <code>&lt;project&gt;.bak</code>,
@@ -188,21 +190,26 @@
     return (bytes / 1024 / 1024).toFixed(1) + ' MB';
   }
 
-  function download(name, whole) {
+  // format is 'zip' or 'cbz' for a whole-directory archive, and ignored for a
+  // bare database. Both produce the same bytes; only the name differs, and the
+  // name is what decides whether Toolkit offers to restore the file.
+  function download(name, whole, format) {
+    var ext = whole ? (format === 'cbz' ? '.cbz' : '.zip') : '.db';
     var a = document.createElement('a');
-    a.href = base + (whole ? '/tag/archive?project=' : '/tag/download?project=') + encodeURIComponent(name);
-    a.download = name + (whole ? '.zip' : '.db');
+    a.href = base + (whole ? '/tag/archive?project=' : '/tag/download?project=') + encodeURIComponent(name) +
+             (whole && format === 'cbz' ? '&format=cbz' : '');
+    a.download = name + ext;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
   }
 
-  function downloadButton(label, title, name, whole) {
+  function downloadButton(label, title, name, whole, format) {
     var btn = document.createElement('button');
     btn.className = 'btn';
     btn.textContent = label;
     btn.title = title;
-    btn.addEventListener('click', function() { download(name, whole); });
+    btn.addEventListener('click', function() { download(name, whole, format); });
     return btn;
   }
 
@@ -246,7 +253,8 @@
       action.className = 'actions';
       action.appendChild(downloadButton('.db', 'The project database on its own', p.name, false));
       if (p.files > 1) {
-        action.appendChild(downloadButton('.zip', 'The whole project directory, bitmaps and all', p.name, true));
+        action.appendChild(downloadButton('.zip', 'The whole project directory, bitmaps and all', p.name, true, 'zip'));
+        action.appendChild(downloadButton('.cbz', 'The same archive named so C-Bus Toolkit will restore it', p.name, true, 'cbz'));
       }
       tr.appendChild(action);
 
@@ -259,10 +267,59 @@
       .then(function(r) { return r.json(); })
       .then(function(data) {
         renderProjects(data.projects);
+        setBackupTarget(data.active);
         if (!dbProject.value && data.active) dbProject.placeholder = data.active;
       })
-      .catch(function(err) { setStatus('Could not list projects: ' + err, 'err'); });
+      .catch(function(err) {
+        setStatus('Could not list projects: ' + err, 'err');
+        setBackupTarget('');
+        backupBtn.title = 'Could not reach the bridge to find the loaded project';
+      });
   }
+
+  // --- One-click backup of the running project ---
+
+  var backupBtn = document.getElementById('backup');
+  var backupProject = '';
+
+  function setBackupTarget(name) {
+    backupProject = name || '';
+    backupBtn.disabled = !backupProject;
+    backupBtn.textContent = backupProject ? 'Back up ' + backupProject : 'Back up project';
+    backupBtn.title = backupProject
+      ? 'Save ' + backupProject + ' to disk, then download the whole project directory as a .cbz'
+      : 'No project is loaded';
+  }
+
+  function stamp() { return new Date().toTimeString().slice(0, 8); }
+
+  backupBtn.addEventListener('click', function() {
+    if (!backupProject) return;
+    var name = backupProject;
+    backupBtn.disabled = true;
+    backupBtn.textContent = 'Saving\u2026';
+
+    // C-Gate keeps the loaded project in memory. Without this the download is
+    // whatever was last written to disk, which is the whole trap this button
+    // exists to close — and the command goes through /cgate so it shows up
+    // in the log like any other.
+    fetch(base + '/cgate?cmd=' + encodeURIComponent('project save ' + name))
+      .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+      .catch(function(err) { return { ok: false, data: { error: String(err) } }; })
+      .then(function(res) {
+        if (!res.ok || (res.data && res.data.error)) {
+          addEntry('response', stamp(), 'Backup: project save failed (' +
+            ((res.data && res.data.error) || 'no response') +
+            ') \u2014 downloading the copy already on disk, which may be out of date.');
+        }
+        download(name, true, 'cbz');
+        setBackupTarget(name);
+      });
+  });
+
+  // The panel loads this list when it opens; the header button needs it up
+  // front, so ask once at startup too.
+  loadProjects();
 
   document.getElementById('db-toggle').addEventListener('click', function() {
     panel.classList.toggle('open');

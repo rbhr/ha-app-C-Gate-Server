@@ -101,6 +101,25 @@ The console provides:
 - Filterable log streams (events, status, commands, responses)
 - Download and upload of project tag databases
 
+### Backing up the running project
+
+**Back up <project>** in the console header is the one-click version: it sends
+`project save`, waits for C-Gate to write the project to disk, and then
+downloads the whole project directory as a `.cbz`.
+
+The save is the point of it. C-Gate holds a loaded project in memory and writes
+it out only when told to, so a backup taken without it is whatever was last
+saved — which may be a great deal older than what is running. The `project
+save` and C-Gate's reply appear in the console log like any other command.
+
+If C-Gate cannot be reached, the download still happens against the copy on
+disk and the log says so, rather than the button appearing to do nothing.
+
+`.cbz` is what C-Bus Toolkit restores from: a flat zip of the project
+directory, database and dynamic labelling bitmaps together. The `.bak` left
+behind by a previous upload is not included — it is the console's file, not the
+project's.
+
 ### Project tag databases
 
 **Tag database** in the console header opens a panel listing every project in
@@ -108,12 +127,12 @@ The console provides:
 was last written.
 
 **Download** offers each project as **.db**, the database on its own, and — for a
-project with more than the database in its directory — **.zip**, the whole
-directory. The zip has the same shape as Toolkit's `.cbz`, so it can go straight
-back in. C-Gate holds a loaded project in memory and only writes it to disk
-when told to, so send `project save` in the console first if the project has
-been changed since it was loaded; otherwise the download is the last saved
-copy.
+project with more than the database in its directory — **.zip** and **.cbz**,
+the whole directory. Those two are the same archive under different names;
+`.cbz` is the one Toolkit will offer to restore. Nothing here sends `project
+save` first, so a download from this table is the last saved copy — use the
+header button, or send `project save` yourself, if the project has changed
+since it was loaded.
 
 **Upload** puts a project from your PC into the add-on, which is how a project
 built in C-Bus Toolkit gets in. It takes any of:
