@@ -21,10 +21,10 @@ ports:
   20024/tcp: 20024
   20025/tcp: 20025
   20026/tcp: 20026
-  20123/tcp: null
-  20124/tcp: null
-  20125/tcp: null
-  20126/tcp: null
+  20123/tcp: 20123
+  20124/tcp: 20124
+  20125/tcp: 20125
+  20126/tcp: 20126
   8980/tcp: 8980
 ports_description:
   20023/tcp: C-Gate Command Interface
