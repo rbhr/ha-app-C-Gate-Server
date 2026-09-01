@@ -167,9 +167,38 @@ anything that is not a plain file, are refused.
 | 20024 | C-Gate Event Interface     |
 | 20025 | C-Gate Status Change Port  |
 | 20026 | C-Gate Config Change Port  |
+| 20123 | SSL Command Interface      |
+| 20124 | SSL Event Interface        |
+| 20125 | SSL Status Change Port     |
+| 20126 | SSL Config Change Port     |
 | 8980  | Web Console (HTTP/WS)      |
 
-Ports 20123–20126 are the SSL equivalents (disabled by default).
+20123–20126 are the same four interfaces over TLS. C-Gate always listens on
+them; before 1.1.12 the add-on simply did not publish them, so connections
+were refused by the host before C-Gate ever saw them.
+
+### Connecting C-Bus Toolkit
+
+Toolkit talks to a remote C-Gate over **20123**, and that is effectively fixed
+— the remote port in its `cgatesites.xml` is 20123 and there is no supported
+way to point a remote site at 20023 instead.
+
+Two things have to be true, and only the first of them produces a log line:
+
+1. **The port has to be published.** It is, from 1.1.12 on. If you have
+   customised the add-on's network settings, check 20123 still has a host port
+   in **Settings → Add-ons → C-Gate Server → Configuration → Network**. An
+   unpublished port means the host answers Toolkit's connection with an
+   immediate reset, and **nothing appears in the C-Gate log at all** — the
+   connection never reached it. A silent log here means the port, not C-Gate.
+2. **The Toolkit PC has to be in the access control list.** Add its address to
+   [Allowed IP Addresses](#allowed-ip-addresses); the automatic rules cover
+   Home Assistant and the Supervisor network, not another machine on the LAN.
+   Refusals of this kind *are* logged.
+
+C-Gate presents its Schneider factory certificate on the SSL ports and does not
+ask for a client certificate. Toolkit ships the matching trust, so no
+certificate setup is needed.
 
 ### Health checks
 
