@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.1.12
+
+- **C-Gate's SSL ports are published, so C-Bus Toolkit can connect.** Toolkit
+  dials 20123 for a remote site and cannot be pointed at 20023 — the remote
+  port in its `cgatesites.xml` is fixed. This add-on mapped 20123–20126 to
+  `null`, so the host reset Toolkit's connection before it reached the
+  container and **C-Gate logged nothing at all**, which is what made this hard
+  to see: every Toolkit device failed identically while a plain connection to
+  the published 20023 worked. C-Gate itself needed no change; its SSL
+  interfaces were listening the whole time.
+
+  Reaching the port is only half of it. C-Gate still checks its access control
+  list, and the rules the add-on generates cover Home Assistant and the
+  Supervisor network, not a Toolkit PC elsewhere on the LAN — add that address
+  to **Allowed IP addresses**. If you have customised the add-on's network
+  settings, check 20123 has a host port under Configuration → Network.
+- **Added a one-click backup to the console header.** *Back up <project>* sends
+  `project save` and then downloads the whole project directory — database,
+  dynamic labelling bitmaps and index — as a `.cbz`, which is the shape and the
+  name C-Bus Toolkit restores from. The save matters: C-Gate holds a loaded
+  project in memory, and without it a backup is whatever was last written to
+  disk. If C-Gate is unreachable the download still happens and the log says
+  the copy may be out of date, rather than the button silently doing nothing.
+- The per-project table in the Tag database panel offers `.cbz` alongside
+  `.zip`. Same bytes, different name.
+- **Project archives no longer contain the `.bak` an upload left behind.** That
+  file is the console's, not the project's, and it put a second database inside
+  an archive handed to Toolkit. The file count shown in the panel already left
+  it out, so the two now agree.
+- Dropped `ingress_entry: /`. Supervisor appends it *relative* to a session URL
+  that already ends in a slash, so every ingress request arrived as `//`.
+  Nothing was broken by it here — the bridge collapses repeated slashes — but
+  the key is meant for add-ons whose entry point is a file, and copying it to
+  another add-on did break that one's panel.
+
 ## 1.1.11
 
 - **A C-Gate outage no longer hangs the web console.** The command session
