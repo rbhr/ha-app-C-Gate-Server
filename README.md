@@ -47,11 +47,19 @@ renders in the add-on's Documentation tab.
 | 20024 | C-Gate event interface    |
 | 20025 | C-Gate status change port |
 | 20026 | C-Gate config change port |
+| 20123 | SSL command interface     |
+| 20124 | SSL event interface       |
+| 20125 | SSL status change port    |
+| 20126 | SSL config change port    |
 | 8980  | Web console (HTTP/WS)     |
 
-Ports 20123–20126 are the SSL equivalents, disabled by default. The web console
-is normally reached through ingress; port 8980 only needs exposing for direct
-access.
+The SSL ports are the same four interfaces over TLS. **C-Bus Toolkit needs
+20123**: it dials that port for a remote site and cannot be pointed at 20023.
+Toolkit also has to be allowed through C-Gate's access control — see the
+[documentation](cgate-server/DOCS.md).
+
+The web console is normally reached through ingress; port 8980 only needs
+exposing for direct access.
 
 ## Add-ons
 

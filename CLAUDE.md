@@ -118,9 +118,8 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $token" \
 - Access control (`config/access.txt`) matches connecting clients with
   `remote`, not `interface`. `interface` matches the local address a connection
   arrived on and never matches a client.
-- Ingress reaches the add-on as `//`, but **not because ingress does that** —
-  because `cgate-server/config.yaml` sets `ingress_entry: /`. Supervisor builds
-  the panel URL as
+- **Do not set `ingress_entry`.** It was set to `/` here until 1.1.12, and
+  every request arrived as `//` as a result. Supervisor builds the panel URL as
 
   ```python
   url = f"/api/hassio_ingress/{self.ingress_token}/"   # already ends in a slash
@@ -132,14 +131,32 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $token" \
   asked for `/`. The key is meant for add-ons whose entry point is a file, e.g.
   deconz's `ingress_entry: ingress.html` (note: no leading slash).
 
-  This matters because the note used to describe the doubled slash as a
-  property of ingress, and that cost real time elsewhere:
-  `ha-app-OpenSprinkler-Server` copied `ingress_entry: /` from here for parity
-  and shipped a broken panel, its firmware having no equivalent of
-  `normalizePath`.
+  Nothing was broken by it — `normalizePath` collapses `//` — which is why it
+  survived so long here. It was not harmless elsewhere:
+  `ha-app-OpenSprinkler-Server` copied the key from this repo for parity and
+  shipped a broken panel, its firmware having no equivalent of `normalizePath`.
 
-  Nothing is broken here — `normalizePath` (`main.go:1051`) collapses `//` to
-  `/` and handles both — so this is optional cleanup, not a fix. If the key is
-  ever dropped, `normalizePath` must stay: it also strips the ingress prefix,
-  and `http.ServeMux` would still answer 301 to a cleaned path and send the
-  panel iframe to the Home Assistant dashboard. **Do not reintroduce a mux.**
+  `normalizePath` and its `//` test cases stay regardless. The collapse is now
+  a guard against the key coming back, but the function's live job is stripping
+  the ingress session prefix, which Supervisor does not always do — and
+  `http.ServeMux` would answer 301 to a cleaned path and send the panel iframe
+  to the Home Assistant dashboard. **Do not reintroduce a mux.**
+
+## C-Gate's SSL interfaces and C-Bus Toolkit
+
+C-Gate listens on 20023–20026 in the clear and on 20123–20126 over SSL; the
+secure ports are `secure.port-base` and are always enabled inside the
+container. The add-on published only the plaintext four until 1.1.12.
+
+That mattered because **C-Bus Toolkit dials 20123 for a remote site and cannot
+be told otherwise** — the remote port in `cgatesites.xml` is fixed at 20123. A
+Toolkit that could not reach the add-on therefore produced no C-Gate log line
+at all: the host RST the SYN and nothing ever arrived. If Toolkit cannot
+connect, check the port is published before looking anywhere in C-Gate.
+
+Reaching the port is only half of it. C-Gate still checks `config/access.txt`,
+which matches clients with `remote`, and `run.sh` generates rules for Home
+Assistant and the Supervisor network — not for a Toolkit PC elsewhere on the
+LAN. That address has to be added to the add-on's `access_ips` option. In a
+dotted quad any octet of 255 is a wildcard, so `192.168.1.255` allows a whole
+/24.

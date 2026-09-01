@@ -34,6 +34,9 @@ func TestNormalizePath(t *testing.T) {
 	}{
 		{"root", "/", "/"},
 		{"empty", "", "/"},
+		// "ingress_entry: /" has been dropped from config.yaml, so Supervisor
+		// no longer asks for "//". These stay so that reintroducing the key
+		// cannot break the panel again.
 		{"double slash from ingress_entry", "//", "/"},
 		{"triple slash", "///", "/"},
 		{"cgate", "/cgate", "/cgate"},
@@ -748,6 +751,86 @@ func TestTagArchiveDownload(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir2, "YELMAH", "YELMAH-DLTD-Pic2000.bmp")); err != nil {
 		t.Errorf("round trip lost the bitmap: %v", err)
+	}
+}
+
+// The header's one-click backup asks for ?format=cbz. The bytes are the same
+// flat zip either way; only the extension differs, and it is the extension
+// that decides whether Toolkit offers to restore the file.
+func TestTagArchiveDownloadAsCBZ(t *testing.T) {
+	dir := useTempProjectsDir(t)
+	if err := os.MkdirAll(filepath.Join(dir, "YELMAH"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range toolkitProject("YELMAH") {
+		if err := os.WriteFile(filepath.Join(dir, "YELMAH", name), content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := route(http.NotFoundHandler())
+
+	for _, c := range []struct{ query, want string }{
+		{"", `attachment; filename="YELMAH.zip"`},
+		{"&format=zip", `attachment; filename="YELMAH.zip"`},
+		{"&format=cbz", `attachment; filename="YELMAH.cbz"`},
+		{"&format=CBZ", `attachment; filename="YELMAH.cbz"`},
+		{"&format=nonsense", `attachment; filename="YELMAH.zip"`},
+	} {
+		t.Run("format"+c.query, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler(rec, httptest.NewRequest(http.MethodGet,
+				"http://addon:8980/tag/archive?project=YELMAH"+c.query, nil))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("archive = %d, want 200", rec.Code)
+			}
+			if got := rec.Header().Get("Content-Disposition"); got != c.want {
+				t.Errorf("Content-Disposition = %q, want %q", got, c.want)
+			}
+			if _, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len())); err != nil {
+				t.Errorf("body is not a readable zip: %v", err)
+			}
+		})
+	}
+}
+
+// An upload keeps the database it replaced as <project>.db.bak, inside the
+// project directory. That file is the console's, not the project's: a .cbz
+// carrying it hands Toolkit an archive with two databases in it.
+func TestTagArchiveLeavesOutOurOwnBackups(t *testing.T) {
+	dir := useTempProjectsDir(t)
+	if err := os.MkdirAll(filepath.Join(dir, "YELMAH"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range toolkitProject("YELMAH") {
+		if err := os.WriteFile(filepath.Join(dir, "YELMAH", name), content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "YELMAH", "YELMAH.db"+backupSuffix),
+		append(append([]byte{}, sqliteMagic...), []byte("the previous one")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	route(http.NotFoundHandler())(rec, httptest.NewRequest(http.MethodGet,
+		"http://addon:8980/tag/archive?project=YELMAH&format=cbz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("archive = %d, want 200", rec.Code)
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(zr.File))
+	for _, f := range zr.File {
+		names = append(names, f.Name)
+	}
+	sort.Strings(names)
+	want := []string{"YELMAH-DLTD-Pic2000.bmp", "YELMAH-DLTD-index.txt", "YELMAH.db"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Errorf("archive holds %v, want %v", names, want)
 	}
 }
 
