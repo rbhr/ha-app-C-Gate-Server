@@ -4,6 +4,7 @@ Usage: python3 tests/integration.py IMAGE
 No host ports, devices, production projects, or registries are modified.
 """
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -61,6 +62,17 @@ with tempfile.TemporaryDirectory(prefix="cgate-integration-") as temp:
     data = Path(temp)
     options = data / "options.json"
     options.write_text(json.dumps({"project_name": "HOME", "log_level": "INFO", "cgate_args": "-s"}))
+
+    def reclaim_data():
+        # Native Linux preserves root ownership from the container, unlike
+        # Docker Desktop. Reclaim only this disposable test mount after C-Gate
+        # stops so the host can stage the next boot and remove it on exit.
+        if sys.platform != "linux" or os.geteuid() == 0:
+            return
+        docker("run", "--rm", "--network", "none", "--entrypoint", "chown",
+               "-v", str(data) + ":/data", image, "-R",
+               str(os.getuid()) + ":" + str(os.getgid()), "/data")
+
     try:
         docker("run", "-d", "--name", name, "--network", "none", "--add-host",
                "homeassistant.local.hass.io:127.0.0.1", "-v", str(data) + ":/data", image)
@@ -123,6 +135,7 @@ with tempfile.TemporaryDirectory(prefix="cgate-integration-") as temp:
 
         # Simulate migration interrupted after destination mkdir on a prior boot.
         docker("stop", "-t", "10", name)
+        reclaim_data()
         (data / "tag/LEGACY").mkdir(parents=True)
         (data / "tag/LEGACY/LEGACY.db").write_bytes(before)
         (data / "projects/LEGACY").mkdir()
@@ -138,7 +151,9 @@ with tempfile.TemporaryDirectory(prefix="cgate-integration-") as temp:
         assert argv.count("-s") == 2, argv
         print("PASS: effective project option, literal extra arguments and interrupted migration", flush=True)
     except Exception:
-        print(docker("logs", "--tail", "100", name, check=False).stdout, file=sys.stderr)
+        logs = docker("logs", "--tail", "100", name, check=False)
+        print(logs.stdout + logs.stderr, file=sys.stderr)
         raise
     finally:
         docker("rm", "-f", name, check=False)
+        reclaim_data()
