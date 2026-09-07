@@ -20,3 +20,7 @@ graphify-out/
 # not committed — running go tooling locally recreates them.
 cgate-server/web/go.mod
 cgate-server/web/go.sum
+
+# Python regression helpers
+__pycache__/
+*.pyc

@@ -10,9 +10,10 @@ to HTTP/WebSocket and serves the ingress panel.
   image tag**, so it must be bumped for every release.
 - `cgate-server/run.sh` — the entrypoint. Sets up `/data`, rewrites C-Gate's
   config, starts the Go bridge under a restart loop, then `exec`s Java as PID 1.
-- `cgate-server/web/main.go` — the whole bridge. Single file, deliberately: the
-  Dockerfile copies `web/main.go` and `web/console.html` by name, so **adding a
-  `.go` file means updating that `COPY` line**.
+- `cgate-server/web/main.go` — protocol, streams, HTTP and upload parsing.
+- `cgate-server/web/storage.go` — validated project lifecycle transactions,
+  recovery and snapshots. The Dockerfile copies both files explicitly; update
+  that `COPY` list when adding a source file.
 - `cgate-server/cgate-dist/` — the unmodified C-Gate distribution. Treat as
   vendor code; `cgate-dist/help/cmds.txt` is the command reference and is worth
   grepping before guessing at C-Gate syntax (use `grep -a`; it is not clean
@@ -20,19 +21,19 @@ to HTTP/WebSocket and serves the ingress panel.
 
 ## Building and testing
 
-There is no Go toolchain on the usual dev machine. Run the tests in the image's
-own toolchain:
+The Dockerfile pins the toolchain, runtime images, Go dependency and added
+APKs. Every full image build runs vet and unit tests with its own Go/SQLite
+inputs. To run that stage alone:
 
 ```sh
-cd cgate-server && docker run --rm -v "$PWD/web":/src:ro -w /tmp/b golang:1.25-alpine sh -c '
-cp /src/main.go /src/main_test.go /src/console.html . &&
-go mod init cgate-web >/dev/null 2>&1 &&
-go get golang.org/x/net/websocket >/dev/null 2>&1 &&
-gofmt -l . && go vet ./... && go test ./...'
+docker build --target web-test ./cgate-server
 ```
 
-`go.mod`/`go.sum` are gitignored and synthesised at build time — do not commit
-them. `docker build --target web-build ./cgate-server` checks the Go stage alone.
+CI additionally runs `go test -race`, shell/release/UI regressions, and
+`python3 tests/integration.py IMAGE` against real C-Gate in an isolated
+container. See `tests/README.md`. Keep toolchain/dependency versions in
+`.github/workflows/checks.yaml` synchronized with the Dockerfile.
+`go.mod`/`go.sum` remain gitignored and synthesized; do not commit them.
 
 For anything touching C-Gate's behaviour, build and run the real thing rather
 than reasoning about it — several assumptions in this repo's history did not
@@ -47,9 +48,10 @@ docker exec cgate-test sh -c 'printf "project dir\nproject list\n" | nc -w 6 127
 ## The bridge's connection model
 
 - **Nothing dials C-Gate with `cmdSession.mu` held for longer than one attempt.**
-  `connect()` makes a single bounded dial and returns an error; `drop()` closes
-  the session and marks it down; `maintain()` is the one goroutine allowed to
-  wait. The earlier version redialled from inside `send()` with the mutex held
+  `connect()` makes a bounded dial, requires a complete welcome, and returns an error; `drop()` closes
+  the session and marks it down; `maintain()` handles reconnects; HTTP calls fail while the session is down.
+  Commands have a cancellable queue wait and one total deadline; never resend
+  a failed write whose outcome may be unknown. The earlier version redialled from inside `send()` with the mutex held
   and no time limit, so every request — the ingress panel's included — queued
   behind that dial for the whole of a C-Gate restart. If you add a code path
   that reconnects, reconnect through `maintain()`, not under the lock.

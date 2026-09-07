@@ -5,13 +5,20 @@ OPTIONS_FILE="/data/options.json"
 
 # Parse Home Assistant add-on options
 PROJECT_NAME=$(jq -r '.project_name // "HOME"' "$OPTIONS_FILE")
-INTERFACE_IP=$(jq -r '.interface_ip // ""' "$OPTIONS_FILE")
 LOG_LEVEL=$(jq -r '.log_level // "DEBUG"' "$OPTIONS_FILE")
 CGATE_ARGS=$(jq -r '.cgate_args // ""' "$OPTIONS_FILE")
 
+case "$PROJECT_NAME" in
+    ""|*[!A-Za-z0-9_-]*) echo "Invalid project_name: use letters, digits, - and _" >&2; exit 1 ;;
+esac
+[ "${#PROJECT_NAME}" -le 32 ] || { echo "project_name is longer than 32 characters" >&2; exit 1; }
+case "$LOG_LEVEL" in TRACE|DEBUG|INFO|WARN|ERROR) ;; *) echo "Invalid log_level" >&2; exit 1 ;; esac
+if [ -n "$(jq -r '.interface_ip // ""' "$OPTIONS_FILE")" ]; then
+    echo "The retired interface_ip option had no effect. Configure C-Bus interfaces in the project using Toolkit." >&2
+fi
+
 echo "C-Gate Server starting..."
 echo "  Project:   ${PROJECT_NAME}"
-echo "  Interface: ${INTERFACE_IP:-local}"
 echo "  Log level: ${LOG_LEVEL}"
 
 # --- Initialise persistent storage on first run ---
@@ -43,34 +50,60 @@ fi
 # was lost on the next restart. Projects now live in /data/projects, with the
 # databases from earlier versions moved across on first run.
 
-if [ ! -d /data/projects ]; then
-    echo "First run: initialising /data/projects"
-    mkdir -p /data/projects
+mkdir -p /data/projects
+# Recover interrupted directory swaps before Java can load either copy.
+CGATE_PROJECTS_DIR=/data/projects /cgate/cgate-web -recover
 
-    # Project directories earlier versions left in the tag directory.
-    for DIR in /data/tag/*/; do
-        NAME=$(basename "${DIR%/}")
-        [ -f "${DIR}${NAME}.db" ] || continue
-        echo "  moving project ${NAME} out of /data/tag"
-        mv "${DIR%/}" /data/projects/
-    done
-
-    # A bare <name>.db there is a project too; C-Gate wants it in its own
-    # directory.
-    for FILE in /data/tag/*.db; do
-        [ -f "$FILE" ] || continue
-        NAME=$(basename "$FILE" .db)
-        [ -d "/data/projects/${NAME}" ] && continue
-        echo "  moving project ${NAME} out of /data/tag"
-        mkdir -p "/data/projects/${NAME}"
-        mv "$FILE" "/data/projects/${NAME}/${NAME}.db"
-    done
-
-    # Nothing to move on a clean install, so seed the shipped defaults.
-    if [ -z "$(ls -A /data/projects 2>/dev/null)" ]; then
-        echo "  seeding the default project"
-        cp -r /cgate/tag-defaults/* /data/projects/ 2>/dev/null || true
+# Migration is checked per project on every start. Directory creation is not
+# a completion marker; an interruption after mkdir is safe to retry.
+for DIR in /data/tag/*/; do
+    NAME=$(basename "${DIR%/}")
+    [ -f "${DIR}${NAME}.db" ] || continue
+    TARGET="/data/projects/${NAME}"
+    if [ -d "$TARGET" ] && [ -z "$(ls -A "$TARGET")" ]; then rmdir "$TARGET"; fi
+    if [ -e "$TARGET" ]; then
+        echo "Migration conflict for ${NAME}: leaving the legacy project in /data/tag for review" >&2
+        continue
     fi
+    echo "  moving project ${NAME} out of /data/tag"
+    mv "${DIR%/}" "$TARGET"
+done
+for FILE in /data/tag/*.db; do
+    [ -f "$FILE" ] || continue
+    NAME=$(basename "$FILE" .db)
+    TARGET="/data/projects/${NAME}"
+    if [ -e "${TARGET}/${NAME}.db" ]; then
+        echo "Migration conflict for ${NAME}: leaving the legacy database in /data/tag for review" >&2
+        continue
+    fi
+    mkdir -p "$TARGET"
+    echo "  moving project ${NAME} out of /data/tag"
+    mv "$FILE" "${TARGET}/${NAME}.db"
+done
+
+# Seed only when no project database exists. Install a whole default directory
+# by rename so an interrupted copy is never mistaken for a completed seed.
+HAVE_PROJECT=false
+for DIR in /data/projects/*/; do
+    NAME=$(basename "${DIR%/}")
+    [ ! -f "${DIR}${NAME}.db" ] || HAVE_PROJECT=true
+done
+if [ "$HAVE_PROJECT" = false ]; then
+    for DEFAULT in /cgate/tag-defaults/*/; do
+        [ -d "$DEFAULT" ] || continue
+        NAME=$(basename "${DEFAULT%/}")
+        TARGET="/data/projects/${NAME}"
+        if [ -d "$TARGET" ] && [ -z "$(ls -A "$TARGET")" ]; then rmdir "$TARGET"; fi
+        if [ -e "$TARGET" ]; then
+            echo "Cannot seed ${NAME}: a nonempty project directory already exists" >&2
+            exit 1
+        fi
+        STAGING=$(mktemp -d /data/projects/.seed-XXXXXX)
+        cp -R "${DEFAULT}." "$STAGING/"
+        sync
+        mv "$STAGING" "$TARGET"
+        sync
+    done
 fi
 
 # --- Link persistent directories into C-Gate's expected locations ---
@@ -114,25 +147,44 @@ CGATE_CONFIG=/data/config/C-GateConfig.txt
 
 # set_cgate_property KEY VALUE — replace the property in place, or append it.
 set_cgate_property() {
-    if [ -f "$CGATE_CONFIG" ] && grep -q "^$1=" "$CGATE_CONFIG"; then
-        # '|' as the delimiter: it cannot appear in the paths set here
-        sed -i "s|^$1=.*|$1=$2|" "$CGATE_CONFIG"
+    PROPERTY_TMP=$(mktemp /data/config/.property-XXXXXX)
+    if [ -f "$CGATE_CONFIG" ]; then
+        awk -F= -v key="$1" -v value="$2" '
+            $1 == key { if (!written) print key "=" value; written=1; next }
+            { print }
+            END { if (!written) print key "=" value }
+        ' "$CGATE_CONFIG" > "$PROPERTY_TMP"
     else
-        printf '%s=%s\n' "$1" "$2" >> "$CGATE_CONFIG"
+        printf '%s=%s\n' "$1" "$2" > "$PROPERTY_TMP"
     fi
+    mv "$PROPERTY_TMP" "$CGATE_CONFIG"
 }
 
 set_cgate_property project.default.dir "/data/projects/"
 set_cgate_property project.default.archive-dir "/data/projects/archived/"
 echo "  Projects:  $(awk -F= '/^project.default.dir=/{print $2; exit}' "$CGATE_CONFIG")"
 
-# Load and start the configured project at boot, but never override a startup
-# project that has been set deliberately.
-if ! grep -q "^project.start=." "$CGATE_CONFIG" 2>/dev/null; then
-    set_cgate_property project.start "${PROJECT_NAME}"
-    echo "  Autostart: ${PROJECT_NAME}"
+# Track the last value written by the add-on. Changes made directly in
+# C-GateConfig.txt remain overrides; later option changes update managed values.
+START_OWNER=/data/config/.managed-project-start
+CURRENT_START=$(awk -F= '$1 == "project.start" {sub(/\r$/, "", $2); print $2; exit}' "$CGATE_CONFIG")
+IS_MANAGED=false
+if [ -f "$START_OWNER" ] && grep -Fxq -- "$CURRENT_START" "$START_OWNER"; then IS_MANAGED=true; fi
+if [ -z "$CURRENT_START" ] || [ "$IS_MANAGED" = true ] ||
+   { [ ! -f "$START_OWNER" ] && [ "$CURRENT_START" = "$PROJECT_NAME" ]; }; then
+    # Record both values before changing the property. A crash between the
+    # two files can then be reconciled as a managed update on the next boot.
+    printf '%s\n%s\n' "$CURRENT_START" "$PROJECT_NAME" > "${START_OWNER}.tmp"
+    sync
+    mv "${START_OWNER}.tmp" "$START_OWNER"
+    sync
+    set_cgate_property project.start "$PROJECT_NAME"
+    sync
+    printf '%s\n' "$PROJECT_NAME" > "${START_OWNER}.tmp"
+    mv "${START_OWNER}.tmp" "$START_OWNER"
+    echo "  Autostart: ${PROJECT_NAME} (managed by project_name)"
 else
-    echo "  Autostart: $(awk -F= '/^project.start=/{print $2; exit}' "$CGATE_CONFIG") (from C-GateConfig.txt)"
+    echo "  Autostart: ${CURRENT_START} (preserved override in C-GateConfig.txt)"
 fi
 
 # --- Access control ---
@@ -244,13 +296,25 @@ export CGATE_PROJECT="${PROJECT_NAME}"
 
 (
     while true; do
-        /cgate/cgate-web
-        echo "cgate-web exited ($?) — restarting in 2s" >&2
+        # A failing command must be tested explicitly under set -e, otherwise
+        # this subshell exits and leaves Java running without the bridge.
+        if /cgate/cgate-web; then
+            STATUS=0
+        else
+            STATUS=$?
+        fi
+        echo "cgate-web exited (${STATUS}) — restarting in 2s" >&2
         sleep 2
     done
 ) &
 
 # --- Launch C-Gate as PID 1 ---
+
+# cgate_args is whitespace-separated C-Gate arguments, never shell code.
+# Disable filename expansion and pass each argument literally; do not eval it.
+set -f
+set -- $CGATE_ARGS
+set +f
 
 exec java \
     -Djava.library.path=. \
@@ -258,4 +322,4 @@ exec java \
     -Xms64M \
     -Xmx256M \
     -jar cgate.jar \
-    -s
+    -s "$@"

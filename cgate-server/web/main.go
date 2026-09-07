@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -13,7 +14,6 @@ import (
 	"io"
 	"io/fs"
 	"log"
-	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,52 +57,103 @@ const (
 	// it alive through NAT/firewalls and detect silent drops.
 	commandHeartbeat = 2 * time.Minute
 
-	// Per-line read deadline for an interactive command.
+	// Total deadline, including queue time and writes, for an interactive command.
 	commandReadDeadline = 5 * time.Second
 
-	// Per-line read deadline for the PROJECT commands an upload sends. Stopping
+	// Total deadline for the PROJECT commands an upload sends. Stopping
 	// a started project means stopping its networks, which is not instant.
 	projectReadDeadline = 20 * time.Second
 )
 
-// wsHub manages WebSocket clients
+// Each client has one writer and a bounded queue. A stalled browser never
+// owns the hub lock while writing to a socket or blocks C-Gate stream readers.
+const (
+	wsQueueSize    = 32
+	maxWSClients   = 64
+	wsWriteTimeout = 2 * time.Second
+)
+
+type wsClientState struct {
+	queue chan []byte
+	done  chan struct{}
+}
 type wsHub struct {
 	mu      sync.RWMutex
-	clients map[*websocket.Conn]bool
+	clients map[*websocket.Conn]*wsClientState
 }
 
-func newHub() *wsHub {
-	return &wsHub{clients: make(map[*websocket.Conn]bool)}
-}
-
+func newHub() *wsHub { return &wsHub{clients: make(map[*websocket.Conn]*wsClientState)} }
 func (h *wsHub) add(ws *websocket.Conn) {
+	client := &wsClientState{queue: make(chan []byte, wsQueueSize), done: make(chan struct{})}
 	h.mu.Lock()
-	h.clients[ws] = true
+	if len(h.clients) >= maxWSClients {
+		h.mu.Unlock()
+		ws.SetWriteDeadline(time.Now())
+		ws.Close()
+		return
+	}
+	h.clients[ws] = client
 	h.mu.Unlock()
+	go func() {
+		defer h.remove(ws)
+		for {
+			select {
+			case <-client.done:
+				return
+			case data := <-client.queue:
+				ws.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+				if _, err := ws.Write(data); err != nil {
+					return
+				}
+			}
+		}
+	}()
 }
-
 func (h *wsHub) remove(ws *websocket.Conn) {
 	h.mu.Lock()
-	_, ok := h.clients[ws]
-	delete(h.clients, ws)
+	client, ok := h.clients[ws]
+	if ok {
+		delete(h.clients, ws)
+		close(client.done)
+	}
 	h.mu.Unlock()
 	if ok {
-		ws.Close()
+		go func() { ws.SetWriteDeadline(time.Now()); ws.Close() }()
 	}
 }
-
 func (h *wsHub) broadcast(msg map[string]string) {
-	data, _ := json.Marshal(msg)
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	var slow []*websocket.Conn
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-	for ws := range h.clients {
-		if _, err := ws.Write(data); err != nil {
-			go h.remove(ws)
+	for ws, client := range h.clients {
+		select {
+		case client.queue <- data:
+		default:
+			slow = append(slow, ws)
 		}
+	}
+	h.mu.RUnlock()
+	for _, ws := range slow {
+		h.remove(ws)
 	}
 }
 
 var hub = newHub()
+
+var commandRequests = make(chan struct{}, 32)
+
+func admitCommand(w http.ResponseWriter) bool {
+	select {
+	case commandRequests <- struct{}{}:
+		return true
+	default:
+		writeJSONError(w, http.StatusServiceUnavailable, "too many pending command requests")
+		return false
+	}
+}
 
 // Connection state for the health/ready endpoints. Written by the goroutines
 // owning each connection, read by HTTP handlers, so these are atomic rather
@@ -185,37 +237,153 @@ func streamPort(port, streamName string, up *atomic.Bool) {
 	}
 }
 
-// commandSession holds the persistent command connection and its reader
+// contextMutex is a zero-value usable mutex whose wait can be cancelled.
+// No goroutine is left behind to execute work after its caller has timed out.
+type contextMutex struct {
+	once  sync.Once
+	token chan struct{}
+}
+
+func (m *contextMutex) init() { m.once.Do(func() { m.token = make(chan struct{}, 1) }) }
+func (m *contextMutex) acquire(ctx context.Context) error {
+	m.init()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case m.token <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			m.Unlock()
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (m *contextMutex) Lock()   { _ = m.acquire(context.Background()) }
+func (m *contextMutex) Unlock() { <-m.token }
+func (m *contextMutex) TryLock() bool {
+	m.init()
+	select {
+	case m.token <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+const (
+	maxCommandBytes   = 16 << 10
+	maxReplyBytes     = 4 << 20
+	maxReplyLineBytes = 1 << 20
+	maxReplyLines     = 4096
+	welcomeTimeout    = 10 * time.Second
+)
+
+var errCommandUnavailable = errors.New("C-Gate command connection is not ready")
+var errCommandBusy = errors.New("C-Gate command queue is full")
+
+// commandSession holds the persistent command connection and its reader.
 type commandSession struct {
-	mu     sync.Mutex
-	conn   net.Conn
-	reader *bufio.Reader
+	mu        contextMutex
+	conn      net.Conn
+	reader    *bufio.Reader
+	queueOnce sync.Once
+	queue     chan struct{}
 }
 
 var cmdSession = &commandSession{}
 
-// connect dials the command port and drains C-Gate's banner.
-//
-// One attempt, reporting failure rather than retrying: this runs with s.mu
-// held, and waiting there is what used to hang the bridge. maintain() does the
-// waiting instead.
+// connect makes one bounded attempt. Only maintain calls this in production;
+// HTTP requests fail promptly while it prepares a replacement connection.
 func (s *commandSession) connect() error {
+	commandUp.Store(false)
 	conn, err := dialCGate(cgateCommandPort)
 	if err != nil {
 		return fmt.Errorf("connecting to C-Gate command port: %w", err)
 	}
-	s.conn = conn
-	s.reader = bufio.NewReader(conn)
-	// Drain the connect banner
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	for {
-		if _, err := s.reader.ReadString('\n'); err != nil {
-			break
-		}
+	return s.acceptWelcome(conn, welcomeTimeout)
+}
+func (s *commandSession) acceptWelcome(conn net.Conn, timeout time.Duration) error {
+	reader := bufio.NewReader(conn)
+	conn.SetDeadline(time.Now().Add(timeout))
+	lines, code, err := readReply(reader)
+	if err != nil || code != 201 {
+		conn.Close()
+		commandUp.Store(false)
+		return fmt.Errorf("C-Gate welcome failed: %v (reply %q)", err, lines)
 	}
-	conn.SetReadDeadline(time.Time{})
+	conn.SetDeadline(time.Time{})
+	s.conn, s.reader = conn, reader
 	commandUp.Store(true)
 	return nil
+}
+
+// responseLine strips the numeric protocol prefix before interpreting fields.
+func responseLine(line string) (code int, more bool, text string, err error) {
+	if len(line) < 3 {
+		return 0, false, "", errors.New("short C-Gate response")
+	}
+	for _, c := range line[:3] {
+		if c < '0' || c > '9' {
+			return 0, false, "", errors.New("invalid C-Gate response code")
+		}
+	}
+	code, _ = strconv.Atoi(line[:3])
+	if code < 100 || code > 599 {
+		return 0, false, "", fmt.Errorf("unexpected C-Gate response code %d", code)
+	}
+	if len(line) == 3 {
+		return code, false, "", nil
+	}
+	if line[3] != ' ' && line[3] != '-' {
+		return 0, false, "", errors.New("invalid C-Gate response separator")
+	}
+	return code, line[3] == '-', line[4:], nil
+}
+func readReply(reader *bufio.Reader) ([]string, int, error) {
+	var lines []string
+	total, expected := 0, 0
+	for len(lines) < maxReplyLines {
+		var line []byte
+		for {
+			part, err := reader.ReadSlice('\n')
+			if len(line)+len(part) > maxReplyLineBytes || total+len(line)+len(part) > maxReplyBytes {
+				return lines, 0, errors.New("C-Gate reply exceeds size limit")
+			}
+			line = append(line, part...)
+			if err == bufio.ErrBufferFull {
+				continue
+			}
+			if err != nil {
+				return lines, 0, fmt.Errorf("incomplete C-Gate reply: %w", err)
+			}
+			break
+		}
+		total += len(line)
+		text := strings.TrimRight(string(line), "\r\n")
+		code, more, _, err := responseLine(text)
+		if err != nil {
+			return lines, 0, err
+		}
+		if expected == 343 {
+			// DBGETXML and DBGETP bracket 347 continuation lines with 343/344.
+			if !((code == 347 && more) || (code == 344 && !more)) {
+				return lines, 0, errors.New("invalid C-Gate XML response framing")
+			}
+		} else {
+			if expected != 0 && code != expected {
+				return lines, 0, errors.New("C-Gate response code changed before final line")
+			}
+			expected = code
+		}
+		lines = append(lines, text)
+		if !more {
+			return lines, code, nil
+		}
+	}
+	return lines, 0, errors.New("C-Gate reply exceeds line limit")
 }
 
 // drop closes the command connection and marks the session down, leaving
@@ -278,75 +446,100 @@ func (s *commandSession) maintain() {
 func (s *commandSession) send(cmd string) ([]string, error) {
 	return s.sendWithin(cmd, commandReadDeadline)
 }
-
-// sendWithin runs a command, allowing deadline for each line of the reply. A
-// slow command is not a dead connection: PROJECT STOP has a project's networks
-// to shut down, which takes far longer than an interactive query.
-func (s *commandSession) sendWithin(cmd string, deadline time.Duration) ([]string, error) {
-	s.mu.Lock()
+func (s *commandSession) sendWithin(cmd string, timeout time.Duration) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return s.sendContext(ctx, cmd)
+}
+func validCommand(cmd string) bool {
+	return strings.TrimSpace(cmd) != "" && len(cmd) <= maxCommandBytes && !strings.ContainsAny(cmd, "\r\n\x00")
+}
+func (s *commandSession) sendContext(ctx context.Context, cmd string) ([]string, error) {
+	if !validCommand(cmd) {
+		return nil, errors.New("expected one command without newlines, at most 16384 bytes")
+	}
+	s.queueOnce.Do(func() { s.queue = make(chan struct{}, 32) })
+	select {
+	case s.queue <- struct{}{}:
+		defer func() { <-s.queue }()
+	default:
+		return nil, errCommandBusy
+	}
+	if err := s.mu.acquire(ctx); err != nil {
+		return nil, err
+	}
 	defer s.mu.Unlock()
-
 	if s.conn == nil {
-		// One attempt. maintain() is what waits out an outage; a request
-		// arriving during one is answered with an error, not a hang.
-		if err := s.connect(); err != nil {
-			return nil, err
-		}
+		return nil, errCommandUnavailable
 	}
-
-	if _, err := fmt.Fprintf(s.conn, "%s\r\n", cmd); err != nil {
-		// A failed write usually means C-Gate restarted under a session that
-		// looked fine. One reconnect and resend covers that transparently; if
-		// the reconnect fails too, report it rather than waiting.
-		log.Printf("Command write failed: %v — reconnecting", err)
+	conn := s.conn
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(commandReadDeadline)
+	}
+	conn.SetDeadline(deadline)
+	cancelled := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Now()); close(cancelled) })
+	defer func() {
+		if !stop() {
+			<-cancelled
+		}
+		conn.SetDeadline(time.Time{})
+	}()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// Never resend a failed write: some bytes may already have taken effect.
+	if _, err := fmt.Fprintf(conn, "%s\r\n", cmd); err != nil {
 		s.drop()
-		if err := s.connect(); err != nil {
-			return nil, err
-		}
-		if _, err := fmt.Fprintf(s.conn, "%s\r\n", cmd); err != nil {
-			s.drop()
-			return nil, err
-		}
+		return nil, fmt.Errorf("command write failed; outcome unknown: %w", err)
 	}
-
-	// Read response lines
-	var lines []string
-	for {
-		s.conn.SetReadDeadline(time.Now().Add(deadline))
-		line, err := s.reader.ReadString('\n')
-		if err != nil {
-			if len(lines) > 0 {
-				break // got at least some response
-			}
-			// Deliberately not resent: the command may already have taken
-			// effect at the far end, and repeating a PROJECT STOP is worse
-			// than reporting the failure.
-			log.Printf("Command read failed: %v — dropping the session", err)
-			s.drop()
-			return nil, err
-		}
-		line = strings.TrimRight(line, "\r\n")
-		lines = append(lines, line)
-
-		// Single-line response or last line of multi-line (no dash after code)
-		if len(line) >= 3 && (len(line) == 3 || line[3] != '-') {
-			break
-		}
+	lines, _, err := readReply(s.reader)
+	if err != nil {
+		s.drop()
+		return lines, fmt.Errorf("command outcome unknown: %w", err)
 	}
-	s.conn.SetReadDeadline(time.Time{})
 	return lines, nil
 }
 
 func handleCGate(w http.ResponseWriter, r *http.Request) {
+	if !admitCommand(w) {
+		return
+	}
+	defer func() { <-commandRequests }()
 	cmd := r.URL.Query().Get("cmd")
-	if cmd == "" {
-		http.Error(w, `{"error":"missing cmd parameter"}`, http.StatusBadRequest)
+	if !validCommand(cmd) {
+		writeJSONError(w, http.StatusBadRequest, "expected one command without newlines, at most 16384 bytes")
 		return
 	}
 
-	lines, err := cmdSession.send(cmd)
+	timeout := commandReadDeadline
+	if fields := strings.Fields(cmd); len(fields) > 0 && strings.EqualFold(fields[0], "project") {
+		timeout = projectReadDeadline
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	if err := projectOperations.acquire(ctx); err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	locked := true
+	defer func() {
+		if locked {
+			projectOperations.Unlock()
+		}
+	}()
+	if pendingTransactions() {
+		projectOperations.Unlock()
+		locked = false
+		writeJSONError(w, http.StatusServiceUnavailable, "project recovery is pending")
+		return
+	}
+	lines, err := cmdSession.sendContext(ctx, cmd)
+	projectOperations.Unlock()
+	locked = false
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadGateway)
+		writeJSONError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 
@@ -366,7 +559,7 @@ func handleCGate(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"cmd":      cmd,
 		"response": lines,
 	})
@@ -440,6 +633,7 @@ type projectDB struct {
 	Files    int    `json:"files"`
 	Modified string `json:"modified"`
 	Active   bool   `json:"active"`
+	State    string `json:"state"`
 }
 
 // projectDir and dbPath are the only layout C-Gate reads. Writing anywhere
@@ -495,7 +689,7 @@ func listProjects() []projectDB {
 			Size:     size,
 			Files:    files,
 			Modified: info.ModTime().Format("2006-01-02 15:04:05"),
-			Active:   name == activeProject,
+			State:    "unknown",
 		})
 	}
 	sort.Slice(projects, func(i, j int) bool { return projects[i].Name < projects[j].Name })
@@ -503,6 +697,7 @@ func listProjects() []projectDB {
 }
 
 func writeJSON(w http.ResponseWriter, status int, body interface{}) {
+	http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Second))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(body)
@@ -510,45 +705,6 @@ func writeJSON(w http.ResponseWriter, status int, body interface{}) {
 
 func writeJSONError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
-}
-
-// cgateTry runs a C-Gate command for its side effect and reports what came
-// back. It never waits on C-Gate: a command sent from an upload is skipped when
-// there is no connection and abandoned if the reply does not arrive. An upload
-// must not hang because C-Gate is down.
-func cgateTry(cmd string) []string { return cgateRun(cmd, commandReadDeadline) }
-
-// cgateProject runs one of the PROJECT commands an upload sends, which are
-// allowed longer to answer than an interactive query.
-func cgateProject(cmd string) []string { return cgateRun(cmd, projectReadDeadline) }
-
-func cgateRun(cmd string, deadline time.Duration) []string {
-	if !commandUp.Load() {
-		return []string{"> " + cmd + "  (skipped — no C-Gate connection)"}
-	}
-
-	type reply struct {
-		lines []string
-		err   error
-	}
-	done := make(chan reply, 1)
-	go func() {
-		lines, err := cmdSession.sendWithin(cmd, deadline)
-		done <- reply{lines, err}
-	}()
-
-	// The session's own deadline should fire first; this only catches a
-	// goroutine that never gets the session lock at all.
-	abandon := deadline + 5*time.Second
-	select {
-	case r := <-done:
-		if r.err != nil {
-			return []string{"> " + cmd, "error: " + r.err.Error()}
-		}
-		return append([]string{"> " + cmd}, r.lines...)
-	case <-time.After(abandon):
-		return []string{"> " + cmd, "error: no reply from C-Gate within " + abandon.String()}
-	}
 }
 
 // announce echoes tag database activity into the console log.
@@ -563,10 +719,45 @@ func announce(lines []string) {
 }
 
 func handleTagList(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"active":   activeProject,
-		"projects": listProjects(),
-	})
+	if !admitCommand(w) {
+		return
+	}
+	defer func() { <-commandRequests }()
+	ctx, cancel := context.WithTimeout(r.Context(), commandReadDeadline)
+	defer cancel()
+	if err := projectOperations.acquire(ctx); err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	locked := true
+	defer func() {
+		if locked {
+			projectOperations.Unlock()
+		}
+	}()
+	projects := listProjects()
+	states, err := projectStates(ctx)
+	projectOperations.Unlock()
+	locked = false
+	active := ""
+	for name, state := range states {
+		if state == "started" && (active == "" || name < active) {
+			active = name
+		}
+	}
+	if states[activeProject] == "started" {
+		active = activeProject
+	}
+	for i := range projects {
+		if err == nil {
+			projects[i].State = states[projects[i].Name]
+			if projects[i].State == "" {
+				projects[i].State = "closed"
+			}
+		}
+		projects[i].Active = states[projects[i].Name] == "started"
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"active": active, "configured": activeProject, "state_known": err == nil, "projects": projects})
 }
 
 // requestedProject reads and validates the project named in the query string.
@@ -579,31 +770,7 @@ func requestedProject(r *http.Request) (string, error) {
 }
 
 func handleTagDownload(w http.ResponseWriter, r *http.Request) {
-	project, err := requestedProject(r)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	path := dbPath(project)
-	f, err := os.Open(path)
-	if err != nil {
-		writeJSONError(w, http.StatusNotFound, "no database for project "+project)
-		return
-	}
-	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	name := project + dbSuffix
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
-	log.Printf("Tag database download: %s (%d bytes)", path, info.Size())
-	http.ServeContent(w, r, name, info.ModTime(), f)
+	serveProjectSnapshot(w, r, false, false)
 }
 
 // archiveSuffix picks the extension for a project archive. The bytes are the
@@ -617,73 +784,10 @@ func archiveSuffix(r *http.Request) string {
 	return ".zip"
 }
 
-// handleTagArchive streams a project's whole directory as a zip — the same
-// shape as the .cbz backup Toolkit writes, so it can go straight back in.
 func handleTagArchive(w http.ResponseWriter, r *http.Request) {
-	project, err := requestedProject(r)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	dir := projectDir(project)
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		writeJSONError(w, http.StatusNotFound, "no project directory for "+project)
-		return
-	}
-
-	name := project + archiveSuffix(r)
-	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
-
-	zw := zip.NewWriter(w)
-	defer zw.Close()
-
-	// The response is already streaming, so a failure part way through can
-	// only be logged — the client sees a truncated zip, which will not open.
-	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		// The .bak an upload leaves beside the database is ours, not the
-		// project's. Shipping it would put a second .db in a file Toolkit is
-		// asked to restore, and projectContents already leaves it out of the
-		// file count the console shows.
-		if strings.HasSuffix(d.Name(), backupSuffix) {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil || !info.Mode().IsRegular() {
-			return err
-		}
-		rel, err := filepath.Rel(dir, p)
-		if err != nil {
-			return err
-		}
-		header, err := zip.FileInfoHeader(info)
-		if err != nil {
-			return err
-		}
-		header.Name = filepath.ToSlash(rel)
-		header.Method = zip.Deflate
-		entry, err := zw.CreateHeader(header)
-		if err != nil {
-			return err
-		}
-		f, err := os.Open(p)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		_, err = io.Copy(entry, f)
-		return err
-	})
-	if err != nil {
-		log.Printf("Tag archive download of %s failed part way: %v", project, err)
-		return
-	}
-	log.Printf("Tag archive download: %s as %s", dir, name)
+	serveProjectSnapshot(w, r, true, false)
 }
+func handleTagBackup(w http.ResponseWriter, r *http.Request) { serveProjectSnapshot(w, r, true, true) }
 
 // uploadKind is what an uploaded file turned out to be.
 type uploadKind int
@@ -725,6 +829,9 @@ var errSkipEntry = errors.New("skip entry")
 // come from the uploaded file, so an absolute path or one climbing out with
 // ".." is refused outright rather than quietly rewritten.
 func entryPath(dir, name string) (string, error) {
+	if strings.HasSuffix(name, ".db-wal") || strings.HasSuffix(name, ".db-shm") || strings.HasSuffix(name, ".db-journal") {
+		return "", errors.New("archive contains a live SQLite journal; export a standalone project backup")
+	}
 	clean := path.Clean(strings.ReplaceAll(name, `\`, "/"))
 	if clean == "." || clean == "/" {
 		return "", errSkipEntry
@@ -748,7 +855,7 @@ func writeEntry(dest string, r io.Reader, budget int64) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return 0, err
 	}
-	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return 0, err
 	}
@@ -776,8 +883,11 @@ func unpackZip(f io.ReaderAt, size int64, dir string) error {
 
 	var total int64
 	for _, e := range zr.File {
+		if e.FileInfo().IsDir() {
+			continue
+		}
 		if !e.Mode().IsRegular() {
-			continue // directories, symlinks and the like are not project files
+			return fmt.Errorf("unsupported archive entry %q", e.Name)
 		}
 		dest, err := entryPath(dir, e.Name)
 		if errors.Is(err, errSkipEntry) {
@@ -819,8 +929,11 @@ func unpackTar(r io.Reader, dir string) error {
 		if entries++; entries > maxArchiveEntries {
 			return fmt.Errorf("the archive holds more than the %d entries allowed", maxArchiveEntries)
 		}
-		if h.Typeflag != tar.TypeReg {
-			continue // directories, symlinks, devices
+		if h.Typeflag == tar.TypeDir {
+			continue
+		}
+		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeRegA {
+			return fmt.Errorf("unsupported archive entry %q", h.Name)
 		}
 		dest, err := entryPath(dir, h.Name)
 		if errors.Is(err, errSkipEntry) {
@@ -877,263 +990,212 @@ func handleTagUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "upload requires POST")
 		return
 	}
-
+	release, err := reserveTransfer()
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	defer release()
+	controller := http.NewResponseController(w)
+	controller.SetReadDeadline(time.Now().Add(time.Minute))
+	defer controller.SetReadDeadline(time.Time{})
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
-	file, header, err := r.FormFile("file")
+	// Stream multipart data into the project filesystem; no unbounded memory
+	// buffer or spill files on another filesystem with a different free budget.
+	reader, err := r.MultipartReader()
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "no file in upload: "+err.Error())
-		return
-	}
-	defer file.Close()
-
-	requested := strings.TrimSpace(r.FormValue("project"))
-
-	switch kind := sniff(file); kind {
-	case kindDatabase:
-		uploadDatabase(w, file, header, requested)
-	case kindZip, kindTar, kindTarGz:
-		uploadArchive(w, file, header, requested, kind)
-	default:
-		writeJSONError(w, http.StatusBadRequest,
-			"that is not a C-Gate project: expected a .db database, or a .cbz, .zip, .tar or .tar.gz archive of a project directory")
-	}
-}
-
-// uploadDatabase replaces just the database file, leaving anything else in the
-// project directory as it was.
-//
-// The file is written to a temporary file in the destination directory first,
-// so a failed upload never touches the database in place. C-Gate holds an open
-// project in memory and writes it back to disk, so it is told to stop and
-// close the project before the swap, and to load and start it again
-// afterwards. The previous database is kept alongside as <project>.db.bak.
-func uploadDatabase(w http.ResponseWriter, file multipart.File, header *multipart.FileHeader, requested string) {
-	project := requested
-	if project == "" {
-		project = strings.TrimSuffix(filepath.Base(header.Filename), dbSuffix)
-	}
-	if !projectNamePattern.MatchString(project) {
-		writeJSONError(w, http.StatusBadRequest,
-			fmt.Sprintf("invalid project name %q — letters, digits, - and _ only", project))
-		return
-	}
-
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	dest := dbPath(project)
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "could not create the project directory: "+err.Error())
-		return
-	}
-
-	// Write the upload out in full before disturbing anything: if this fails,
-	// or if C-Gate is unreachable below, the existing database is untouched.
-	tmp, err := os.CreateTemp(filepath.Dir(dest), project+".upload-*")
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "could not create a temporary file: "+err.Error())
-		return
-	}
-	size, err := io.Copy(tmp, file)
-	if err == nil {
-		err = tmp.Sync()
-	}
-	tmp.Close()
-	if err != nil {
-		os.Remove(tmp.Name())
-		writeJSONError(w, http.StatusBadRequest, "upload failed: "+err.Error())
-		return
-	}
-
-	notes := closeInCGate(project)
-
-	backedUp := false
-	if _, err := os.Stat(dest); err == nil {
-		if err := os.Rename(dest, dest+backupSuffix); err != nil {
-			os.Remove(tmp.Name())
-			writeJSONError(w, http.StatusInternalServerError, "could not back up the existing database: "+err.Error())
-			return
-		}
-		backedUp = true
-	}
-
-	if err := os.Rename(tmp.Name(), dest); err != nil {
-		if backedUp {
-			os.Rename(dest+backupSuffix, dest)
-		}
-		os.Remove(tmp.Name())
-		writeJSONError(w, http.StatusInternalServerError, "could not install the uploaded database: "+err.Error())
-		return
-	}
-	log.Printf("Tag database upload: %s (%d bytes, backup=%v)", dest, size, backedUp)
-
-	notes = append(notes, loadInCGate(project)...)
-	announce(append([]string{fmt.Sprintf("uploaded %s (%d bytes)", dest, size)}, notes...))
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"project":  project,
-		"path":     dest,
-		"size":     size,
-		"files":    1,
-		"backup":   backedUp,
-		"cgate":    notes,
-		"projects": listProjects(),
-	})
-}
-
-// uploadArchive replaces a project's whole directory with the contents of an
-// uploaded archive — Toolkit's .cbz backup, or any zip or tar of a project
-// directory. The archive is unpacked into a staging directory beside the
-// project first, so nothing in place is touched until a complete, plausible
-// project has landed on disk. The previous directory is kept as <project>.bak.
-func uploadArchive(w http.ResponseWriter, file multipart.File, header *multipart.FileHeader, requested string, kind uploadKind) {
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "could not create the projects directory: "+err.Error())
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	staging, err := os.MkdirTemp(projectsDir, ".incoming-*")
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "could not create a staging directory: "+err.Error())
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// A no-op once the staging directory has been renamed into place.
 	defer os.RemoveAll(staging)
-
-	switch kind {
-	case kindZip:
-		err = unpackZip(file, header.Size, staging)
-	case kindTar:
-		err = unpackTar(file, staging)
-	case kindTarGz:
-		var gz *gzip.Reader
-		if gz, err = gzip.NewReader(file); err == nil {
-			err = unpackTar(gz, staging)
-			gz.Close()
+	var requested, filename string
+	var upload *os.File
+	for parts := 0; ; parts++ {
+		part, e := reader.NextPart()
+		if e == io.EOF {
+			break
 		}
+		if e != nil {
+			writeJSONError(w, http.StatusBadRequest, e.Error())
+			return
+		}
+		if parts >= 3 {
+			part.Close()
+			writeJSONError(w, http.StatusBadRequest, "too many upload fields")
+			return
+		}
+		switch part.FormName() {
+		case "project":
+			value, e := io.ReadAll(io.LimitReader(part, 65))
+			if e != nil || len(value) > 64 {
+				part.Close()
+				writeJSONError(w, http.StatusBadRequest, "invalid project name")
+				return
+			}
+			requested = strings.TrimSpace(string(value))
+		case "file":
+			if upload != nil {
+				part.Close()
+				writeJSONError(w, http.StatusBadRequest, "only one uploaded file is allowed")
+				return
+			}
+			filename = part.FileName()
+			upload, err = os.Create(filepath.Join(staging, "upload"))
+			if err != nil {
+				part.Close()
+				writeJSONError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			defer upload.Close()
+			_, err = io.Copy(upload, part)
+			if err != nil {
+				part.Close()
+				writeJSONError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		default:
+			part.Close()
+			writeJSONError(w, http.StatusBadRequest, "unknown upload field")
+			return
+		}
+		part.Close()
 	}
+	controller.SetReadDeadline(time.Time{})
+	if upload == nil {
+		writeJSONError(w, http.StatusBadRequest, "no file in upload")
+		return
+	}
+	if requested != "" && !projectNamePattern.MatchString(requested) {
+		writeJSONError(w, http.StatusBadRequest, "invalid project name")
+		return
+	}
+	info, err := upload.Stat()
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	found, err := projectInArchive(staging)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
+	kind := sniff(upload)
+	candidate := filepath.Join(staging, "project")
+	if err = os.Mkdir(candidate, 0755); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	project := found
-	switch {
-	case found != genericDBName && requested != "" && requested != found:
-		writeJSONError(w, http.StatusBadRequest,
-			fmt.Sprintf("the archive holds %s%s, not %s%s", found, dbSuffix, requested, dbSuffix))
-		return
-	case found == genericDBName && requested == "":
-		// C-Gate's own PROJECT ARCHIVE zip: the database inside is generic, so
-		// only the person uploading knows which project it is.
-		writeJSONError(w, http.StatusBadRequest,
-			"this archive holds C-Gate's generic tagdb.db — give the project name to install it as")
-		return
-	case found == genericDBName:
+	project := ""
+	if kind == kindDatabase {
 		project = requested
-	}
-	if !projectNamePattern.MatchString(project) {
-		writeJSONError(w, http.StatusBadRequest,
-			fmt.Sprintf("invalid project name %q — letters, digits, - and _ only", project))
-		return
-	}
-	if project != found {
-		if err := os.Rename(filepath.Join(staging, found+dbSuffix), filepath.Join(staging, project+dbSuffix)); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "could not name the database: "+err.Error())
+		if project == "" {
+			project = strings.TrimSuffix(filepath.Base(filename), dbSuffix)
+		}
+		if !projectNamePattern.MatchString(project) {
+			writeJSONError(w, http.StatusBadRequest, "invalid project name")
 			return
 		}
-	}
-
-	size, files := projectContents(staging)
-	notes := closeInCGate(project)
-
-	dest := projectDir(project)
-	backup := dest + backupSuffix
-	backedUp := false
-	if _, err := os.Stat(dest); err == nil {
-		// Only the most recent backup is kept.
-		if err := os.RemoveAll(backup); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "could not clear the previous backup: "+err.Error())
+		err = os.Rename(upload.Name(), filepath.Join(candidate, project+dbSuffix))
+	} else {
+		upload.Seek(0, io.SeekStart)
+		switch kind {
+		case kindZip:
+			err = unpackZip(upload, info.Size(), candidate)
+		case kindTar:
+			err = unpackTar(upload, candidate)
+		case kindTarGz:
+			var gz *gzip.Reader
+			gz, err = gzip.NewReader(upload)
+			if err == nil {
+				err = unpackTar(gz, candidate)
+				gz.Close()
+			}
+		default:
+			writeJSONError(w, http.StatusBadRequest, "expected a .db database or .cbz, .zip, .tar or .tar.gz project archive")
 			return
 		}
-		if err := os.Rename(dest, backup); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "could not back up the existing project: "+err.Error())
-			return
-		}
-		backedUp = true
-	}
-
-	if err := os.Rename(staging, dest); err != nil {
-		if backedUp {
-			os.Rename(backup, dest)
-		}
-		writeJSONError(w, http.StatusInternalServerError, "could not install the uploaded project: "+err.Error())
-		return
-	}
-
-	log.Printf("Tag project upload: %s (%d files, %d bytes, backup=%v)", dest, files, size, backedUp)
-
-	notes = append(notes, loadInCGate(project)...)
-	announce(append([]string{fmt.Sprintf("uploaded %s (%d files, %d bytes)", dest, files, size)}, notes...))
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"project":  project,
-		"path":     dest,
-		"size":     size,
-		"files":    files,
-		"backup":   backedUp,
-		"cgate":    notes,
-		"projects": listProjects(),
-	})
-}
-
-// closeInCGate makes C-Gate let go of a project before its files are replaced;
-// openInCGate puts it back afterwards. C-Gate holds a loaded project in memory
-// and writes it back to disk, so a swap underneath it would be lost.
-//
-// Only a project C-Gate has open needs stopping and closing. Asking it about
-// one it has never heard of — the usual case for a first upload — answers
-// "Project not found", which reads in the console log like the upload failed.
-func closeInCGate(project string) []string {
-	if !openInCGate(project) {
-		return []string{"project " + project + " is not open in C-Gate, so there is nothing to close"}
-	}
-	notes := cgateProject("project stop " + project)
-	return append(notes, cgateProject("project close "+project)...)
-}
-
-// openInCGate reports whether C-Gate currently holds the project in memory.
-// PROJECT LIST answers with a line per open project: "123-project=HOME
-// state=stopped".
-func openInCGate(project string) bool {
-	for _, line := range cgateTry("project list") {
-		for _, field := range strings.Fields(line) {
-			if field == "project="+project {
-				return true
+		if err == nil {
+			candidate, project, err = archiveProject(candidate)
+			if err == nil {
+				if project == genericDBName {
+					if requested == "" {
+						err = errors.New("give a project name for C-Gate's generic tagdb.db archive")
+					} else {
+						err = os.Rename(filepath.Join(candidate, project+dbSuffix), filepath.Join(candidate, requested+dbSuffix))
+						project = requested
+					}
+				} else if requested != "" && requested != project {
+					err = fmt.Errorf("the archive holds %s.db, not %s.db", project, requested)
+				}
 			}
 		}
 	}
-	return false
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !projectNamePattern.MatchString(project) {
+		writeJSONError(w, http.StatusBadRequest, "invalid project name")
+		return
+	}
+	if err = validateDatabase(r.Context(), filepath.Join(candidate, project+dbSuffix)); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Waiting is cancellable. Once mutation starts, finish or roll back within a
+	// fixed budget even if the browser disconnects halfway through replacement.
+	waiting, cancelWait := context.WithTimeout(r.Context(), transactionTimeout)
+	defer cancelWait()
+	if err = projectOperations.acquire(waiting); err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	locked := true
+	defer func() {
+		if locked {
+			projectOperations.Unlock()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), transactionTimeout)
+	defer cancel()
+	notes, backedUp, err := installProject(ctx, project, candidate, kind == kindDatabase)
+	size, files := projectContents(projectDir(project))
+	projects := listProjects()
+	projectOperations.Unlock()
+	locked = false
+	announce(notes)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"project": project, "path": projectDir(project), "size": size, "files": files, "backup": backedUp, "cgate": notes, "projects": projects})
 }
 
-func loadInCGate(project string) []string {
-	notes := cgateProject("project load " + project)
-	return append(notes, cgateProject("project start "+project)...)
+// Accept flat Toolkit/C-Gate archives or exactly one enclosing directory.
+func archiveProject(dir string) (string, string, error) {
+	found, err := projectInArchive(dir)
+	if err == nil {
+		return dir, found, nil
+	}
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		return "", "", readErr
+	}
+	if len(entries) == 1 && entries[0].IsDir() {
+		nested := filepath.Join(dir, entries[0].Name())
+		found, err = projectInArchive(nested)
+		if err == nil {
+			return nested, found, nil
+		}
+	}
+	return "", "", err
 }
 
 func handleWS(ws *websocket.Conn) {
+	// HTTP request deadlines end at the upgrade; idle WebSockets remain open.
+	ws.SetReadDeadline(time.Time{})
+	ws.SetWriteDeadline(time.Time{})
+	ws.MaxPayloadBytes = 1024
 	hub.add(ws)
 	defer hub.remove(ws)
 	// Keep connection alive by reading (blocks until close)
@@ -1147,9 +1209,10 @@ func handleWS(ws *websocket.Conn) {
 
 // writeStatus renders the shared health/ready body.
 func writeStatus(w http.ResponseWriter, code int) {
+	http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Second))
 	event, status, command := eventStreamUp.Load(), statusStreamUp.Load(), commandUp.Load()
 	state := "degraded"
-	if event && status && command {
+	if event && status && command && !pendingTransactions() {
 		state = "ok"
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1183,13 +1246,14 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 // a project can still be mid-sync when this first returns 200.
 func handleReady(w http.ResponseWriter, r *http.Request) {
 	code := http.StatusOK
-	if !(eventStreamUp.Load() && statusStreamUp.Load() && commandUp.Load()) {
+	if !(eventStreamUp.Load() && statusStreamUp.Load() && commandUp.Load()) || pendingTransactions() {
 		code = http.StatusServiceUnavailable
 	}
 	writeStatus(w, code)
 }
 
 func serveConsole(w http.ResponseWriter, r *http.Request) {
+	http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Second))
 	data, _ := consoleHTML.ReadFile("console.html")
 	w.Header().Set("Content-Type", "text/html")
 	w.Write(data)
@@ -1248,6 +1312,8 @@ func route(wsHandler http.Handler) http.HandlerFunc {
 			handleTagDownload(w, r)
 		case "/tag/archive":
 			handleTagArchive(w, r)
+		case "/tag/backup":
+			handleTagBackup(w, r)
 		case "/tag/upload":
 			handleTagUpload(w, r)
 		case "/ws":
@@ -1259,6 +1325,15 @@ func route(wsHandler http.Handler) http.HandlerFunc {
 }
 
 func main() {
+	if err := cleanupStaging(); err != nil {
+		log.Fatal(err)
+	}
+	if len(os.Args) == 2 && os.Args[1] == "-recover" {
+		if err := recoverTransactions(context.Background(), false); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	log.Printf("C-Gate Web Console starting on %s", listenAddr)
 
 	// Start streaming from event and status ports
@@ -1269,7 +1344,9 @@ func main() {
 	// startup: the console has to be reachable while C-Gate is down, which is
 	// exactly when someone wants to look at it.
 	go cmdSession.maintain()
+	go recoverWhileRunning()
 
 	// Route explicitly rather than via http.ServeMux — see normalizePath.
-	log.Fatal(http.ListenAndServe(listenAddr, route(websocket.Handler(handleWS))))
+	server := &http.Server{Addr: listenAddr, Handler: route(websocket.Handler(handleWS)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: time.Minute, WriteTimeout: 5 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
+	log.Fatal(server.ListenAndServe())
 }

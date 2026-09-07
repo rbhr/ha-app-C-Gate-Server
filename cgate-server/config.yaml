@@ -1,5 +1,5 @@
 name: C-Gate Server
-version: 1.1.12
+version: 1.1.13
 slug: cgate-server
 description: Schneider Electric SpaceLogic C-Gate Server for C-Bus home automation
 url: https://github.com/rbhr/ha-app-C-Gate-Server
@@ -13,6 +13,7 @@ apparmor: false
 timeout: 60
 ingress: true
 ingress_port: 8980
+watchdog: http://[HOST]:[PORT:8980]/health
 panel_icon: mdi:home-automation
 panel_title: C-Gate Console
 ports:
@@ -41,13 +42,11 @@ map:
 hassio_api: true
 options:
   project_name: HOME
-  interface_ip: ""
   access_ips: []
   log_level: DEBUG
   cgate_args: ""
 schema:
-  project_name: str
-  interface_ip: str?
+  project_name: "match(^[A-Za-z0-9_-]{1,32}$)"
   access_ips:
     - str
   log_level: list(TRACE|DEBUG|INFO|WARN|ERROR)
