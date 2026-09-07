@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net"
@@ -14,9 +15,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -142,6 +145,7 @@ func useTempProjectsDir(t *testing.T) string {
 	prevDir, prevActive := projectsDir, activeProject
 	projectsDir, activeProject = dir, "HOME"
 	t.Cleanup(func() { projectsDir, activeProject = prevDir, prevActive })
+	fakeProjectSession(t)
 	return dir
 }
 
@@ -151,7 +155,7 @@ func writeDB(t *testing.T, path, payload string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, append(append([]byte{}, sqliteMagic...), payload...), 0o644); err != nil {
+	if err := os.WriteFile(path, db(payload), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -201,12 +205,12 @@ func TestListProjects(t *testing.T) {
 	if got[0].Name != "EXAMPLE" || got[0].Active {
 		t.Errorf("got[0] = %+v, want EXAMPLE not active", got[0])
 	}
-	if got[1].Name != "HOME" || !got[1].Active {
-		t.Errorf("got[1] = %+v, want HOME active", got[1])
+	if got[1].Name != "HOME" || got[1].Active {
+		t.Errorf("got[1] = %+v, want HOME with runtime state still unknown", got[1])
 	}
 	// The size is the whole project directory, and the .db.bak an upload
 	// leaves behind is ours rather than part of the project.
-	if want := int64(len(sqliteMagic) + len("home")); got[1].Size != want || got[1].Files != 1 {
+	if want := int64(len(db("home"))); got[1].Size != want || got[1].Files != 1 {
 		t.Errorf("HOME = %d bytes in %d files, want %d in 1", got[1].Size, got[1].Files, want)
 	}
 }
@@ -239,7 +243,7 @@ func TestTagDownload(t *testing.T) {
 		if got, want := rec.Header().Get("Content-Disposition"), `attachment; filename="HOME.db"`; got != want {
 			t.Errorf("Content-Disposition = %q, want %q", got, want)
 		}
-		if !bytes.HasPrefix(rec.Body.Bytes(), sqliteMagic) || !strings.HasSuffix(rec.Body.String(), "home") {
+		if databaseDescription(rec.Body.Bytes()) != "home" {
 			t.Errorf("body = %q, want the database file", rec.Body.String())
 		}
 	})
@@ -272,7 +276,7 @@ func TestTagUploadReplacesDatabase(t *testing.T) {
 	writeDB(t, dest, "old contents")
 	handler := route(http.NotFoundHandler())
 
-	uploaded := append(append([]byte{}, sqliteMagic...), "new contents"...)
+	uploaded := db("new contents")
 	rec := httptest.NewRecorder()
 	handler(rec, uploadRequest(t, "HOME", "HOME.db", uploaded))
 
@@ -295,7 +299,7 @@ func TestTagUploadReplacesDatabase(t *testing.T) {
 	if got, err := os.ReadFile(dest); err != nil || !bytes.Equal(got, uploaded) {
 		t.Errorf("installed database = %q (%v), want the uploaded bytes", got, err)
 	}
-	if got, err := os.ReadFile(dest + backupSuffix); err != nil || !strings.HasSuffix(string(got), "old contents") {
+	if got, err := os.ReadFile(filepath.Join(projectDir("HOME")+backupSuffix, "HOME.db")); err != nil || !bytes.Equal(got, db("old contents")) {
 		t.Errorf("backup = %q (%v), want the previous database", got, err)
 	}
 
@@ -317,7 +321,7 @@ func TestTagUploadCreatesNewProject(t *testing.T) {
 
 	// No project field: the name comes from the file name.
 	rec := httptest.NewRecorder()
-	handler(rec, uploadRequest(t, "", "OFFICE.db", append(append([]byte{}, sqliteMagic...), "office"...)))
+	handler(rec, uploadRequest(t, "", "OFFICE.db", db("office")))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("upload = %d %q, want 200", rec.Code, rec.Body.String())
@@ -340,8 +344,8 @@ func TestTagUploadRejectsBadRequests(t *testing.T) {
 		content  []byte
 	}{
 		{"not a database", "HOME", "HOME.db", []byte("this is a text file")},
-		{"path traversal in project", "../../etc/passwd", "x.db", append(append([]byte{}, sqliteMagic...), "x"...)},
-		{"invalid characters in file name", "", "my project!.db", append(append([]byte{}, sqliteMagic...), "x"...)},
+		{"path traversal in project", "../../etc/passwd", "x.db", db("x")},
+		{"invalid characters in file name", "", "my project!.db", db("x")},
 		{"empty file", "HOME", "HOME.db", nil},
 	}
 
@@ -355,7 +359,7 @@ func TestTagUploadRejectsBadRequests(t *testing.T) {
 		})
 	}
 
-	if got, err := os.ReadFile(dest); err != nil || !strings.HasSuffix(string(got), "untouched") {
+	if got, err := os.ReadFile(dest); err != nil || !bytes.Equal(got, db("untouched")) {
 		t.Errorf("existing database = %q (%v), want it left alone", got, err)
 	}
 }
@@ -367,7 +371,7 @@ func TestTagUploadIgnoresPathsInFileName(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	route(http.NotFoundHandler())(rec,
-		uploadRequest(t, "", "../../HOME.db", append(append([]byte{}, sqliteMagic...), "x"...)))
+		uploadRequest(t, "", "../../HOME.db", db("x")))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("upload = %d %q, want 200", rec.Code, rec.Body.String())
@@ -468,8 +472,90 @@ func tarBytes(t *testing.T, entries map[string][]byte, compress bool) []byte {
 	return buf.Bytes()
 }
 
+var fixtureCache sync.Map
+
 func db(payload string) []byte {
-	return append(append([]byte{}, sqliteMagic...), payload...)
+	if data, ok := fixtureCache.Load(payload); ok {
+		return append([]byte{}, data.([]byte)...)
+	}
+	base, err := os.ReadFile("testdata/project.db")
+	if err != nil {
+		panic(err)
+	}
+	f, err := os.CreateTemp("", "cgate-fixture-*.db")
+	if err != nil {
+		panic(err)
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(base); err != nil {
+		panic(err)
+	}
+	f.Close()
+	query := "UPDATE tagged_entity SET description='" + strings.ReplaceAll(payload, "'", "''") + "' WHERE id=(SELECT tagged_entity_id FROM project);"
+	if out, err := exec.Command("sqlite3", "-init", "/dev/null", f.Name(), query).CombinedOutput(); err != nil {
+		panic(fmt.Sprintf("fixture: %v %s", err, out))
+	}
+	data, err := os.ReadFile(f.Name())
+	if err != nil {
+		panic(err)
+	}
+	fixtureCache.Store(payload, data)
+	return append([]byte{}, data...)
+}
+func databaseDescription(data []byte) string {
+	f, err := os.CreateTemp("", "cgate-description-*.db")
+	if err != nil {
+		panic(err)
+	}
+	defer os.Remove(f.Name())
+	f.Write(data)
+	f.Close()
+	out, err := exec.Command("sqlite3", "-init", "/dev/null", "-readonly", f.Name(), "SELECT description FROM tagged_entity WHERE id=(SELECT tagged_entity_id FROM project);").CombinedOutput()
+	if err != nil {
+		panic(fmt.Sprintf("description: %v %s", err, out))
+	}
+	return strings.TrimSpace(string(out))
+}
+func fakeProjectSession(t *testing.T) {
+	states := map[string]string{"HOME": "started"}
+	reviewSession(t, func(cmd string) string {
+		fields := strings.Fields(cmd)
+		if len(fields) < 2 || fields[0] != "project" {
+			return "200 OK\r\n"
+		}
+		if fields[1] == "list" {
+			names := []string{}
+			for name := range states {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			if len(names) == 0 {
+				return "200 OK.\r\n"
+			}
+			var out strings.Builder
+			for i, name := range names {
+				sep := "-"
+				if i == len(names)-1 {
+					sep = " "
+				}
+				fmt.Fprintf(&out, "123%sproject=%s state=%s\r\n", sep, name, states[name])
+			}
+			return out.String()
+		}
+		if len(fields) != 3 {
+			return "400 bad command\r\n"
+		}
+		name := fields[2]
+		switch fields[1] {
+		case "load", "stop":
+			states[name] = "stopped"
+		case "start":
+			states[name] = "started"
+		case "close":
+			delete(states, name)
+		}
+		return "200 OK.\r\n"
+	})
 }
 
 // toolkitProject is the shape of a real C-Bus Toolkit backup: the database,
@@ -625,7 +711,7 @@ func TestUploadArchiveReplacesWholeDirectory(t *testing.T) {
 		t.Errorf("stale bitmap is not in the backup: %v", err)
 	}
 	if got, err := os.ReadFile(filepath.Join(dir, "YELMAH"+backupSuffix, "YELMAH.db")); err != nil ||
-		!strings.HasSuffix(string(got), "old") {
+		!bytes.Equal(got, db("old")) {
 		t.Errorf("backup database = %q (%v), want the previous one", got, err)
 	}
 
@@ -658,7 +744,7 @@ func TestUploadArchiveRefusesEscapingEntries(t *testing.T) {
 		t.Errorf("an entry escaped the tag directory (err = %v)", err)
 	}
 	if got, err := os.ReadFile(filepath.Join(dir, "HOME", "HOME.db")); err != nil ||
-		!strings.HasSuffix(string(got), "untouched") {
+		!bytes.Equal(got, db("untouched")) {
 		t.Errorf("existing project = %q (%v), want it left alone", got, err)
 	}
 }

@@ -1,6 +1,6 @@
 # C-Gate Server
 
-This add-on runs the Schneider Electric SpaceLogic C-Gate Server (v3.7.0) for
+This add-on runs the Schneider Electric SpaceLogic C-Gate Server (v3.8.0) for
 managing C-Bus home automation networks from Home Assistant.
 
 ## What is C-Gate?
@@ -28,10 +28,8 @@ The C-Gate project name corresponding to your C-Bus installation. The default
 is `HOME`. Each project stores its configuration in a separate database under
 `/data/projects/<project_name>/`.
 
-### Interface IP
-
-The IP address of your C-Bus network interface (e.g. a CNI at `192.168.1.10`).
-Leave empty if using a directly connected serial or USB interface.
+Configure each C-Bus interface in the project using Toolkit. The former
+`interface_ip` add-on option never configured an interface and has been removed.
 
 ### Allowed IP Addresses
 
@@ -85,14 +83,17 @@ Controls the verbosity of C-Gate logging. Options: `TRACE`, `DEBUG`, `INFO`,
 ### Additional Arguments
 
 Advanced: extra command-line arguments passed directly to the C-Gate Java
-process. Most users should leave this empty.
+process after `-jar cgate.jar -s`. Values are separated by whitespace and
+passed literally: shell quoting, expansion, and commands are not evaluated.
+Most users should leave this empty.
 
 ## Web Console
 
 The add-on includes a built-in web console accessible via:
 
 - **Ingress**: Click "OPEN WEB UI" in the add-on panel (recommended).
-- **Direct access**: Enable port 8980 in the add-on's Network configuration.
+- **Direct access**: Port 8980 is published by default; its host mapping can be
+  changed in the add-on's Network configuration.
 
 The console provides:
 
@@ -109,11 +110,13 @@ downloads the whole project directory as a `.cbz`.
 
 The save is the point of it. C-Gate holds a loaded project in memory and writes
 it out only when told to, so a backup taken without it is whatever was last
-saved — which may be a great deal older than what is running. The `project
-save` and C-Gate's reply appear in the console log like any other command.
+saved — which may be a great deal older than what is running. The server checks
+C-Gate's final response code before reporting that the backup was saved.
 
-If C-Gate cannot be reached, the download still happens against the copy on
-disk and the log says so, rather than the button appearing to do nothing.
+If saving fails at the transport or C-Gate protocol level, the backup uses a
+consistent SQLite snapshot of the readable disk copy and shows a stale-data
+warning. Snapshot or archive failures return an error instead of a partial ZIP.
+Avoid concurrent edits from Toolkit while backing up companion bitmap files.
 
 `.cbz` is what C-Bus Toolkit restores from: a flat zip of the project
 directory, database and dynamic labelling bitmaps together. The `.bak` left
@@ -155,28 +158,36 @@ An archive replaces the whole project directory, because the database is no use
 without the dynamic labelling bitmaps and index stored beside it. A `.db` on its
 own replaces only the database.
 
-Either way, uploading:
+Both flat archives and archives with one enclosing project directory are
+accepted. Either way, uploading:
 
-1. checks the file and unpacks it into a staging directory, so nothing in place
-   is touched until a complete project has landed on disk,
-2. tells C-Gate to `project stop` and `project close` the project, so it is not
-   holding the old copy in memory,
-3. moves the existing project aside — to `<project>.bak/` for an archive, or
-   `<project>.db.bak` for a bare database — and installs the new one,
-4. tells C-Gate to `project load` and `project start` the project again.
+1. stages the complete upload and checks SQLite integrity and core C-Gate schema,
+2. requires a working command connection, saves any loaded project, and confirms
+   stop/close before replacing files,
+3. records a recoverable transaction and installs the replacement directory,
+4. verifies load and restores the prior started/stopped state (previously closed projects start),
+5. keeps the previous whole project as `<project>.bak/`, for either upload format.
 
-C-Gate's replies to those commands appear in the console log. Uploading a
-project that is not the one in **Project Name** installs it but leaves the
-configured project running.
+A failed operation returns an error and attempts to restore the original files
+and state. If C-Gate is unreachable during rollback, the recovery record and
+original files are retained. Further bridge commands and uploads wait until
+recovery succeeds. Container startup restores interrupted swaps before Java
+starts; a bridge-only restart confirms closure before restoring files.
 
-Only the most recent backup is kept, so download the current project before
-uploading twice over.
+Uploads require C-Gate to be reachable; an outage is never interpreted as proof
+that a project is closed. Replacing one project leaves other projects running.
+Only the most recent successful replacement backup is kept.
 
 ### Limits
 
 An upload may be up to 64 MB and expand to no more than 256 MB across at most
 4096 files. Entries that would be written outside the project directory, and
-anything that is not a plain file, are refused.
+symlinks, devices, duplicate file entries, and SQLite journal sidecars are
+refused. Ordinary directory entries are allowed. Two transfers may run at once;
+each reserves 576 MB of temporary storage with an additional 64 MB of free
+headroom. Large uploads may therefore need more free space than their file size.
+An upload body has one minute to arrive. Commands and downloads have separate
+time budgets; quiet event/status streams remain open indefinitely.
 
 ## Ports
 
@@ -237,7 +248,8 @@ otherwise.
   it during that window would turn a normal boot into a restart loop. Read
   `status` in the body to tell a healthy bridge from one that has lost C-Gate.
 - **`/ready`** answers 503 until the command, event and status connections are
-  all established, then 200. Gate on this rather than `/health` if you need
+  all established, the command welcome is validated, and any pending project
+  recovery is complete, then 200. Gate on this rather than `/health` if you need
   C-Gate itself to be up: it lets a client hold its first poll instead of
   retrying into `408 Operation failed` while C-Gate is still starting.
 
@@ -281,15 +293,22 @@ Autostart: HOME
 ```
 
 It also sets `project.start` so the configured project is loaded and started
-when C-Gate comes up — unless a startup project has already been set, which is
-left alone.
+when C-Gate comes up. The add-on tracks its generated value, so changing
+`project_name` also changes managed autostart. A different value manually set in
+`C-GateConfig.txt` is preserved and identified as an override in the startup log.
+On the first upgrade, an existing value different from `project_name` is also
+preserved because its origin is unknown. To adopt the managed value, remove the
+`project.start` property before restarting. The console reports actual running
+state separately from the configured default.
 
 ### Upgrading from 1.1.7 or earlier
 
 Project databases used to live in `/data/tag`. They are moved to
 `/data/projects` on the first start after upgrading, and C-Gate is pointed at
-the new location in the same start, so there is nothing to do by hand. The move
-is logged and nothing is deleted from `/data/tag`.
+the new location in the same start. Successfully moved projects leave
+`/data/tag`; unrelated files remain there. Migration is retried per project on
+every startup. Conflicting destinations are logged and the legacy copy is
+retained for review.
 
 ## Troubleshooting
 

@@ -1,0 +1,35 @@
+name: Reliability checks
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Go race and startup regression tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.14'
+          cache: false
+      - name: SQLite test dependency
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - name: Go checks
+        working-directory: cgate-server/web
+        run: |
+          go mod init cgate-web
+          go get golang.org/x/net/websocket@v0.58.0
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -race ./...
+      - name: Startup and release checks
+        run: |
+          sh -n cgate-server/run.sh
+          python3 tests/startup.py
+          python3 tests/release.py
+          node tests/backup.js

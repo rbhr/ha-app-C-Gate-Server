@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.1.13
+
+- Recover the web bridge after crashes and monitor its liveness. Validate the
+  C-Gate welcome banner before readiness; cancel queued commands and reject
+  incomplete replies, embedded newlines, and oversized responses.
+- Isolate slow WebSocket clients with bounded queues and write deadlines.
+- Validate uploaded SQLite projects before stopping C-Gate, correctly parse
+  multiline project lists, verify stop/close/load/start results, and restore
+  the previous files and runtime state when replacement fails. Serialize
+  replacements with console commands and backups; recover interrupted file
+  swaps after both bridge and container restarts.
+- Save and create a checked backup in one operation. Report protocol-level
+  save failures as potentially stale disk backups. Support a single enclosing
+  directory in project archives. Both upload formats keep the previous whole
+  project as `<project>.bak/`. Bound concurrent transfers and reserve storage
+  for staging and rollback.
+- Report actual running project state, update managed autostart when
+  `project_name` changes, retry interrupted legacy migrations, and pass
+  whitespace-separated `cgate_args` literally to C-Gate. Remove `interface_ip`,
+  which never configured a C-Bus interface; configure interfaces in Toolkit.
+- Pin image and dependency inputs, run tests inside each image build, and
+  require race/regression and real C-Gate checks before publication. Reject
+  mismatched release tags, existing versions, and backwards `latest` updates.
+
 ## 1.1.12
 
 - **C-Gate's SSL ports are published, so C-Bus Toolkit can connect.** Toolkit

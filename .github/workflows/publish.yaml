@@ -3,15 +3,27 @@ name: Publish
 on:
   release:
     types: [published]
-  workflow_dispatch:
+
+concurrency:
+  group: publish-cgate-server
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 env:
   ARCHITECTURES: '["amd64", "aarch64"]'
   IMAGE_NAME: cgate-server
 
 jobs:
+  test:
+    uses: ./.github/workflows/checks.yaml
+
   init:
     name: Prepare build matrix
+    permissions:
+      contents: read
+      packages: read
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -31,6 +43,13 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Add-on version: ${version}"
 
+      - name: Validate release and refuse existing or older image versions
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check-release.py
+
       - name: Prepare matrix
         id: matrix
         uses: home-assistant/builder/actions/prepare-multi-arch-matrix@2026.06.0
@@ -40,7 +59,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.arch }}
-    needs: init
+    needs: [init, test]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -52,6 +71,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Test release image with real C-Gate
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          platform="linux/${ARCH}"
+          if [ "$ARCH" = aarch64 ]; then platform=linux/arm64; fi
+          docker build --platform "$platform" -t cgate-release-check ./cgate-server
+          python3 tests/integration.py cgate-release-check
 
       - name: Build and push ${{ matrix.arch }}
         uses: home-assistant/builder/actions/build-image@2026.06.0

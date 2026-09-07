@@ -13,24 +13,7 @@ env:
 
 jobs:
   test:
-    name: Go bridge tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: "1.25"
-
-      - name: Test
-        working-directory: cgate-server/web
-        run: |
-          go mod init cgate-web
-          go get golang.org/x/net/websocket
-          go vet ./...
-          go test -v ./...
+    uses: ./.github/workflows/checks.yaml
 
   init:
     name: Prepare build matrix
@@ -62,7 +45,7 @@ jobs:
 
   build:
     name: Test build ${{ matrix.arch }}
-    needs: init
+    needs: [init, test]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -87,6 +70,11 @@ jobs:
           container-registry-password: ${{ secrets.GITHUB_TOKEN }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Real C-Gate reliability checks
+        env:
+          IMAGE: ${{ matrix.image }}:${{ needs.init.outputs.version }}
+        run: python3 tests/integration.py "$IMAGE"
 
       - name: Verify add-on labels
         env:

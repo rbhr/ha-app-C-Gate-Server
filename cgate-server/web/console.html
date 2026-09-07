@@ -267,7 +267,7 @@
       .then(function(r) { return r.json(); })
       .then(function(data) {
         renderProjects(data.projects);
-        setBackupTarget(data.active);
+        setBackupTarget(data.active || data.configured);
         if (!dbProject.value && data.active) dbProject.placeholder = data.active;
       })
       .catch(function(err) {
@@ -299,22 +299,25 @@
     backupBtn.disabled = true;
     backupBtn.textContent = 'Saving\u2026';
 
-    // C-Gate keeps the loaded project in memory. Without this the download is
-    // whatever was last written to disk, which is the whole trap this button
-    // exists to close — and the command goes through /cgate so it shows up
-    // in the log like any other.
-    fetch(base + '/cgate?cmd=' + encodeURIComponent('project save ' + name))
-      .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
-      .catch(function(err) { return { ok: false, data: { error: String(err) } }; })
-      .then(function(res) {
-        if (!res.ok || (res.data && res.data.error)) {
-          addEntry('response', stamp(), 'Backup: project save failed (' +
-            ((res.data && res.data.error) || 'no response') +
-            ') \u2014 downloading the copy already on disk, which may be out of date.');
+    fetch(base + '/tag/backup?project=' + encodeURIComponent(name) + '&format=cbz', { method: 'POST' })
+      .then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Backup failed'); });
+        var warning = r.headers.get('X-CGate-Warning');
+        if (r.headers.get('X-CGate-Saved') !== 'true') {
+          addEntry('response', stamp(), 'Backup: ' + (warning || 'Save was not confirmed; the backup may be out of date.'));
+          setStatus(warning || 'Downloaded disk copy; save was not confirmed.', 'err');
         }
-        download(name, true, 'cbz');
-        setBackupTarget(name);
-      });
+        return r.blob();
+      })
+      .then(function(blob) {
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = name + '.cbz';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+      })
+      .catch(function(err) { setStatus('Backup failed: ' + err.message, 'err'); })
+      .then(function() { setBackupTarget(name); });
   });
 
   // The panel loads this list when it opens; the header button needs it up
@@ -343,10 +346,10 @@
         if (!res.ok) { setStatus(res.data.error || 'Upload failed.', 'err'); return; }
         setStatus('Uploaded ' + res.data.project + ' \u2014 ' +
                   (res.data.files > 1 ? res.data.files + ' files, ' : '') + fmtSize(res.data.size) +
-                  (res.data.backup ? ', previous copy kept as .bak' : '') +
+                  (res.data.backup ? ', previous project kept as .bak' : '') +
                   '. See the log for C-Gate\u2019s response.', 'ok');
         dbFile.value = '';
-        renderProjects(res.data.projects);
+        loadProjects();
       })
       .catch(function(err) { setStatus('Upload failed: ' + err, 'err'); })
       .then(function() { dbSend.disabled = false; });
